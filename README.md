@@ -109,7 +109,10 @@ WordPress is then available at `http://localhost:8765/wp-admin` (`admin` / `admi
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE).
+The source code is licensed under GPL-2.0-or-later. See [LICENSE](LICENSE).
+
+The project name, brand, and logos are trademarks of stealths-labs and are not
+covered by the GPL. See [TRADEMARK.md](TRADEMARK.md).
 
 ---
 
