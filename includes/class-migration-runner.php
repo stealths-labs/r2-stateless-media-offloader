@@ -85,6 +85,19 @@ class Migration_Runner {
 	}
 
 	/**
+	 * Like state(), but bypasses the per-request options cache so writes made
+	 * by start()/stop() in another process are visible. Used by the batch
+	 * worker, where a stale "running" read would defeat the control-plane
+	 * guards.
+	 *
+	 * @return array
+	 */
+	private function fresh_state() {
+		wp_cache_delete( self::STATE_OPTION, 'options' );
+		return $this->state();
+	}
+
+	/**
 	 * Start (or restart) a migration in the given mode.
 	 *
 	 * @param string $mode upload | dry-run | verify
@@ -147,8 +160,11 @@ class Migration_Runner {
 			// the first read and acquiring the lock. Bail BEFORE doing any work
 			// if the run was stopped or superseded — once migrate_batch() runs
 			// it uploads files and writes _r2offload_* meta, side effects the
-			// post-batch guard can't undo.
-			$state = $this->state();
+			// post-batch guard can't undo. fresh_state() busts the options cache
+			// first: stop() runs in another process and only clears ITS cache,
+			// so a plain get_option() here would return this request's stale,
+			// still-"running" copy and the guard would never fire.
+			$state = $this->fresh_state();
 			if ( empty( $state['running'] ) ) {
 				return $state;
 			}
@@ -183,11 +199,14 @@ class Migration_Runner {
 				$result              = array( 'done' => false );
 			}
 
-			// Re-read the control plane after the (potentially slow) batch. We
-			// keep the RAW stored value too, so the persist below can be a true
-			// compare-and-swap: if start()/stop() writes between this read and
-			// our write, the CAS fails and we discard our stale progress rather
-			// than reviving a stopped run or wiping a fresh restart.
+			// Re-read the control plane after the (potentially slow) batch. Bust
+			// the options cache first so we see writes made by stop()/start() in
+			// other processes, not this request's stale copy. We keep the RAW
+			// stored value too, so the persist below can be a true compare-and-
+			// swap: if start()/stop() writes between this read and our write, the
+			// CAS fails and we discard our stale progress rather than reviving a
+			// stopped run or wiping a fresh restart.
+			wp_cache_delete( self::STATE_OPTION, 'options' );
 			$expected_raw = get_option( self::STATE_OPTION, array() );
 			$current      = array_merge( self::default_state(), is_array( $expected_raw ) ? $expected_raw : array() );
 			if ( (string) $current['run_id'] !== $run_id ) {
