@@ -1,0 +1,67 @@
+# Local development environment for r2-stateless-media-offload.
+# Spins up WordPress + MariaDB with the plugin mounted, R2 credentials
+# injected from a local (gitignored) .env file. See .env.example.
+#
+#   cp .env.example .env   # fill in your R2 test bucket credentials
+#   docker compose up -d
+#   docker compose run --rm wpcli wp r2offload test
+services:
+  db:
+    image: mariadb:11
+    environment:
+      MYSQL_ROOT_PASSWORD: wordpress
+      MYSQL_DATABASE: wordpress
+      MYSQL_USER: wordpress
+      MYSQL_PASSWORD: wordpress
+    volumes:
+      - db_data:/var/lib/mysql
+
+  wordpress:
+    image: wordpress:6.7-php8.3-apache
+    depends_on:
+      - db
+    ports:
+      - "8765:80"
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_DB_NAME: wordpress
+      WORDPRESS_CONFIG_EXTRA: |
+        define( 'R2OFFLOAD_ACCOUNT_ID',   getenv('R2OFFLOAD_ACCOUNT_ID') );
+        define( 'R2OFFLOAD_BUCKET',       getenv('R2OFFLOAD_BUCKET') );
+        define( 'R2OFFLOAD_ACCESS_KEY',   getenv('R2OFFLOAD_ACCESS_KEY') );
+        define( 'R2OFFLOAD_SECRET_KEY',   getenv('R2OFFLOAD_SECRET_KEY') );
+        define( 'R2OFFLOAD_CUSTOM_DOMAIN',getenv('R2OFFLOAD_CUSTOM_DOMAIN') ?: '' );
+      R2OFFLOAD_ACCOUNT_ID: ${R2OFFLOAD_ACCOUNT_ID}
+      R2OFFLOAD_BUCKET: ${R2OFFLOAD_BUCKET}
+      R2OFFLOAD_ACCESS_KEY: ${R2OFFLOAD_ACCESS_KEY}
+      R2OFFLOAD_SECRET_KEY: ${R2OFFLOAD_SECRET_KEY}
+      R2OFFLOAD_CUSTOM_DOMAIN: ${R2OFFLOAD_CUSTOM_DOMAIN:-}
+    volumes:
+      - wp_core:/var/www/html
+      - .:/var/www/html/wp-content/plugins/r2-stateless-media-offload
+
+  wpcli:
+    image: wordpress:cli-php8.3
+    depends_on:
+      - db
+      - wordpress
+    environment:
+      WORDPRESS_DB_HOST: db
+      WORDPRESS_DB_USER: wordpress
+      WORDPRESS_DB_PASSWORD: wordpress
+      WORDPRESS_DB_NAME: wordpress
+      R2OFFLOAD_ACCOUNT_ID: ${R2OFFLOAD_ACCOUNT_ID}
+      R2OFFLOAD_BUCKET: ${R2OFFLOAD_BUCKET}
+      R2OFFLOAD_ACCESS_KEY: ${R2OFFLOAD_ACCESS_KEY}
+      R2OFFLOAD_SECRET_KEY: ${R2OFFLOAD_SECRET_KEY}
+      R2OFFLOAD_CUSTOM_DOMAIN: ${R2OFFLOAD_CUSTOM_DOMAIN:-}
+    volumes:
+      - wp_core:/var/www/html
+      - .:/var/www/html/wp-content/plugins/r2-stateless-media-offload
+    user: "33:33"
+
+volumes:
+  db_data:
+  wp_core:
