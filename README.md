@@ -92,6 +92,10 @@ wp r2offload sync --verify
 
 Migrations are resumable and batched, so large libraries can be processed without timeouts.
 
+### Already migrated with another tool?
+
+If your media is already in R2 — for example, copied straight from Google Cloud Storage with [Cloudflare Super Slurper](https://developers.cloudflare.com/r2/data-migration/super-slurper/) — just run the migration as normal. Files already present in R2 are **detected and registered without re-uploading** (nothing is copied twice), and the plugin starts serving them from R2. This works from both the WP-CLI command and the admin **Media → Migrate to R2** page.
+
 ## How it works
 
 The plugin records each attachment's R2 object key in post metadata and rewrites media URLs at render time. The WordPress database and post content are never altered. Because the path prefix is captured per attachment at upload time, changing it later affects only new uploads — existing media continues to resolve correctly.
