@@ -79,13 +79,16 @@ class Settings {
 		if ( '' === $plain || ! function_exists( 'openssl_encrypt' ) ) {
 			return $plain;
 		}
-		$key    = hash( 'sha256', wp_salt( 'auth' ), true );
-		$iv     = random_bytes( 16 );
-		$cipher = openssl_encrypt( $plain, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv );
+		// AES-256-GCM (authenticated) — detects tampering, unlike CBC.
+		$key = hash( 'sha256', wp_salt( 'auth' ), true );
+		$iv  = random_bytes( 12 );
+		$tag = '';
+		$cipher = openssl_encrypt( $plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag );
 		if ( false === $cipher ) {
 			return $plain;
 		}
-		return 'r2enc:' . base64_encode( $iv . $cipher );
+		// Versioned marker so the format can evolve without breaking old blobs.
+		return 'r2enc:v2:' . base64_encode( $iv . $tag . $cipher );
 	}
 
 	/**
@@ -108,14 +111,24 @@ class Settings {
 		if ( ! function_exists( 'openssl_decrypt' ) ) {
 			return $fail( 'OpenSSL unavailable' );
 		}
+		$key = hash( 'sha256', wp_salt( 'auth' ), true );
+
+		// v2 — AES-256-GCM: iv(12) | tag(16) | ciphertext.
+		if ( 0 === strpos( $stored, 'r2enc:v2:' ) ) {
+			$raw = base64_decode( substr( $stored, 9 ), true );
+			if ( false === $raw || strlen( $raw ) <= 28 ) {
+				return $fail( 'corrupt ciphertext' );
+			}
+			$plain = openssl_decrypt( substr( $raw, 28 ), 'aes-256-gcm', $key, OPENSSL_RAW_DATA, substr( $raw, 0, 12 ), substr( $raw, 12, 16 ) );
+			return ( false === $plain ) ? $fail( 'wrong key or tampered' ) : $plain;
+		}
+
+		// v1 — AES-256-CBC: iv(16) | ciphertext (backward compatibility).
 		$raw = base64_decode( substr( $stored, 6 ), true );
 		if ( false === $raw || strlen( $raw ) <= 16 ) {
 			return $fail( 'corrupt ciphertext' );
 		}
-		$iv     = substr( $raw, 0, 16 );
-		$cipher = substr( $raw, 16 );
-		$key    = hash( 'sha256', wp_salt( 'auth' ), true );
-		$plain  = openssl_decrypt( $cipher, 'aes-256-cbc', $key, OPENSSL_RAW_DATA, $iv );
+		$plain = openssl_decrypt( substr( $raw, 16 ), 'aes-256-cbc', $key, OPENSSL_RAW_DATA, substr( $raw, 0, 16 ) );
 		return ( false === $plain ) ? $fail( 'wrong key' ) : $plain;
 	}
 

@@ -87,7 +87,7 @@ $r2offload_locked_mode = $settings->is_constant( 'mode' );
 
 		<p>
 			<button type="button" class="button" id="r2offload-test-connection"><?php esc_html_e( 'Test Connection', 'r2-stateless-media-offload' ); ?></button>
-			<span id="r2offload-test-result" class="notice inline" style="display:none;margin:0;"></span>
+			<span id="r2offload-test-result" class="notice inline" style="display:none;margin:0;" role="status" aria-live="polite"></span>
 		</p>
 
 		<h2 class="title"><?php esc_html_e( 'Delivery', 'r2-stateless-media-offload' ); ?></h2>
