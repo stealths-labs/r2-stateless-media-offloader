@@ -193,20 +193,14 @@ $r2_docs_url = 'https://developers.cloudflare.com/r2/api/s3/tokens/';
 							<strong><?php echo esc_html( 'cdn' === $settings->get( 'mode' ) ? __( 'CDN (keep local)', 'r2-stateless-media-offload' ) : __( 'Stateless (remove local)', 'r2-stateless-media-offload' ) ); ?></strong>
 						</p>
 						<p class="description"><?php esc_html_e( 'Defined in wp-config.php', 'r2-stateless-media-offload' ); ?></p>
-					<?php
-					else :
-						$display_mode = $settings->get( 'mode' );
-						if ( ! array_key_exists( 'mode', $stored ) ) {
-							$display_mode = 'stateless';
-						}
-						?>
+					<?php else : ?>
 						<fieldset>
 							<label>
 								<input
 									type="radio"
 									name="r2offload_mode"
 									value="cdn"
-									<?php checked( $display_mode, 'cdn' ); ?>
+									<?php checked( $settings->get( 'mode' ), 'cdn' ); ?>
 								/>
 								<?php esc_html_e( 'CDN (keep local)', 'r2-stateless-media-offload' ); ?>
 							</label>
@@ -216,7 +210,7 @@ $r2_docs_url = 'https://developers.cloudflare.com/r2/api/s3/tokens/';
 									type="radio"
 									name="r2offload_mode"
 									value="stateless"
-									<?php checked( $display_mode, 'stateless' ); ?>
+									<?php checked( $settings->get( 'mode' ), 'stateless' ); ?>
 								/>
 								<?php esc_html_e( 'Stateless (remove local)', 'r2-stateless-media-offload' ); ?>
 							</label>

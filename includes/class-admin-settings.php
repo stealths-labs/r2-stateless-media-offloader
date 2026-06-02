@@ -145,8 +145,8 @@ class Admin_Settings {
 
 			if ( 'mode' === $key ) {
 				// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-				$mode = isset( $_POST['r2offload_mode'] ) ? wp_unslash( $_POST['r2offload_mode'] ) : 'stateless';
-				$existing['mode'] = in_array( $mode, array( 'cdn', 'stateless' ), true ) ? $mode : 'stateless';
+				$mode = isset( $_POST['r2offload_mode'] ) ? wp_unslash( $_POST['r2offload_mode'] ) : 'cdn';
+				$existing['mode'] = in_array( $mode, array( 'cdn', 'stateless' ), true ) ? $mode : 'cdn';
 				continue;
 			}
 
@@ -165,6 +165,8 @@ class Admin_Settings {
 			__( 'Settings saved.', 'r2-stateless-media-offload' ),
 			'success'
 		);
+
+		set_transient( 'settings_errors', get_settings_errors(), 30 );
 
 		wp_safe_redirect(
 			add_query_arg(
@@ -223,6 +225,8 @@ class Admin_Settings {
 			: true;
 
 		$has_secret = $this->has_stored_secret() || ( ! $this->settings->is_constant( 'secret_key' ) && '' !== $this->settings->get( 'secret_key' ) );
+
+		$settings = $this->settings;
 
 		$template = R2OFFLOAD_PLUGIN_DIR . 'templates/settings-page.php';
 		if ( is_readable( $template ) ) {
