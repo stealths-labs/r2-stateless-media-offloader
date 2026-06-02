@@ -140,15 +140,25 @@ class Migration_Runner {
 			return $state;
 		}
 
-		// The run token this worker belongs to. A batch can take a while, and
-		// the lock only serialises batch workers — it doesn't stop the
-		// control plane (start()/stop()) changing state meanwhile. We capture
-		// the token now and re-validate before persisting (see below).
-		$run_id = (string) $state['run_id'];
-
 		// try/finally so the lock is ALWAYS released — a fatal in migrate_batch()
 		// must never strand it and block all progress until the TTL expires.
 		try {
+			// Re-read under the lock: a stop()/start() may have landed between
+			// the first read and acquiring the lock. Bail BEFORE doing any work
+			// if the run was stopped or superseded — once migrate_batch() runs
+			// it uploads files and writes _r2offload_* meta, side effects the
+			// post-batch guard can't undo.
+			$state = $this->state();
+			if ( empty( $state['running'] ) ) {
+				return $state;
+			}
+
+			// The run token this worker belongs to. A batch can take a while,
+			// and the lock only serialises batch workers — it doesn't stop the
+			// control plane (start()/stop()) changing state meanwhile. We
+			// capture the token now and re-validate before persisting (below).
+			$run_id = (string) $state['run_id'];
+
 			try {
 				$migrator = new Migrator( null, $this->settings );
 				$migrator->set_dry_run( 'dry-run' === $state['mode'] )
