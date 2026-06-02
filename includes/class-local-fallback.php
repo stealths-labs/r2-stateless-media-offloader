@@ -26,6 +26,13 @@ class Local_Fallback {
 	private $settings;
 
 	/**
+	 * Temp files restored this request, removed on shutdown.
+	 *
+	 * @var string[]
+	 */
+	private $temp_files = array();
+
+	/**
 	 * @param R2_Client $client
 	 * @param Settings  $settings
 	 */
@@ -44,11 +51,16 @@ class Local_Fallback {
 		}
 		add_filter( 'get_attached_file', array( $this, 'ensure_local' ), 10, 2 );
 		add_filter( 'load_image_to_edit_path', array( $this, 'ensure_local_for_edit' ), 10, 3 );
+		add_action( 'shutdown', array( $this, 'cleanup' ) );
 	}
 
 	/**
-	 * Ensure an attachment's original exists locally, restoring it from R2 when
-	 * it has been removed (Stateless mode).
+	 * Provide a readable local path for an attachment's original, restoring it
+	 * from R2 to a temporary file when it has been removed (Stateless mode).
+	 *
+	 * The container's uploads directory is not assumed writable at runtime, so
+	 * the restore lands in the system temp dir and that path is returned —
+	 * WordPress image functions accept any readable path as a source.
 	 *
 	 * @param string $file          Expected local path.
 	 * @param int    $attachment_id
@@ -62,11 +74,8 @@ class Local_Fallback {
 		if ( false === $key ) {
 			return $file;
 		}
-		$restored = $this->client->download_object( $key, $file );
-		if ( is_wp_error( $restored ) ) {
-			error_log( sprintf( 'r2offload: restore failed for %s (attachment %d): %s', $key, (int) $attachment_id, $restored->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-		}
-		return $file;
+		$tmp = $this->restore_to_temp( $key, wp_basename( $file ), (int) $attachment_id );
+		return ( '' === $tmp ) ? $file : $tmp;
 	}
 
 	/**
@@ -90,11 +99,43 @@ class Local_Fallback {
 		$dir = dirname( $original );
 		$dir = ( '.' === $dir || '' === $dir ) ? '' : trailingslashit( $dir );
 		$key = $dir . wp_basename( $filepath );
-		$restored = $this->client->download_object( $key, $filepath );
-		if ( is_wp_error( $restored ) ) {
-			error_log( sprintf( 'r2offload: edit-path restore failed for %s (attachment %d): %s', $key, (int) $attachment_id, $restored->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+		$tmp = $this->restore_to_temp( $key, wp_basename( $filepath ), (int) $attachment_id );
+		return ( '' === $tmp ) ? $filepath : $tmp;
+	}
+
+	/**
+	 * Download an R2 object to a temporary file and return its path.
+	 *
+	 * @param string $key
+	 * @param string $basename Preserve the extension so image functions work.
+	 * @param int    $attachment_id For error context.
+	 * @return string Temp path on success, '' on failure.
+	 */
+	private function restore_to_temp( $key, $basename, $attachment_id ) {
+		$tmp = wp_tempnam( $basename );
+		if ( ! $tmp ) {
+			return '';
 		}
-		return $filepath;
+		$restored = $this->client->download_object( $key, $tmp );
+		if ( is_wp_error( $restored ) ) {
+			wp_delete_file( $tmp );
+			error_log( sprintf( 'r2offload: restore failed for %s (attachment %d): %s', $key, $attachment_id, $restored->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+			return '';
+		}
+		$this->temp_files[] = $tmp;
+		return $tmp;
+	}
+
+	/**
+	 * Remove restored temp files at the end of the request.
+	 */
+	public function cleanup() {
+		foreach ( $this->temp_files as $tmp ) {
+			if ( file_exists( $tmp ) ) {
+				wp_delete_file( $tmp );
+			}
+		}
+		$this->temp_files = array();
 	}
 
 	/**

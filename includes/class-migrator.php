@@ -107,11 +107,10 @@ class Migrator {
 	 */
 	public function migrate_attachment( $attachment_id ) {
 		$result = array(
-			'uploaded'         => 0,
-			'skipped'          => 0,
-			'bytes'            => 0,
-			'errors'           => array(),
-			'original_present' => false,
+			'uploaded' => 0,
+			'skipped'  => 0,
+			'bytes'    => 0,
+			'errors'   => array(),
 		);
 
 		$attachment_id = (int) $attachment_id;
@@ -137,15 +136,18 @@ class Migrator {
 			$this->migrate_item( $attachment_id, $item, $result );
 		}
 
-		// Mark the attachment offloaded once its ORIGINAL is confirmed in R2
-		// (freshly uploaded or already present / adopted). Keying off the
-		// original — not "zero errors across every size" — means a single
-		// flaky size can't block adoption of media that is genuinely in R2.
-		// Dry-run / verify never write postmeta.
+		// Mark the attachment offloaded only when EVERY variant is in R2 — each
+		// item either uploaded or already present, with no errors. Keying off
+		// the original alone could mark an attachment whose size is missing in
+		// R2, and the URL rewriter would then emit R2 URLs for that size that
+		// 404 instead of serving the current source. Requiring all variants is
+		// also exactly what external bulk copies (e.g. Cloudflare Super Slurper,
+		// which copies every size) satisfy. Dry-run / verify never write meta.
 		if (
 			! $this->dry_run
 			&& ! $this->verify
-			&& ! empty( $result['original_present'] )
+			&& empty( $result['errors'] )
+			&& ( $result['uploaded'] + $result['skipped'] ) > 0
 		) {
 			update_post_meta( $attachment_id, self::META_SYNCED, 1 );
 			// Store the original's actual R2 key (SWR-313) so readers resolve
@@ -305,9 +307,6 @@ class Migrator {
 		// external tool (e.g. Cloudflare Super Slurper) without moving bytes.
 		if ( ! $this->dry_run && $this->client->object_exists( $key ) ) {
 			$result['skipped'] += 1;
-			if ( '' === $size ) {
-				$result['original_present'] = true;
-			}
 			return;
 		}
 
@@ -374,9 +373,6 @@ class Migrator {
 
 		$result['uploaded'] += 1;
 		$result['bytes']    += $size_bytes;
-		if ( '' === $size ) {
-			$result['original_present'] = true;
-		}
 	}
 
 	/**
