@@ -92,6 +92,7 @@ jQuery(function($){
 			' — ' + s.processed + ' / ' + s.total + ' processed' +
 			'  ·  uploaded ' + s.uploaded + '  ·  skipped ' + s.skipped + '  ·  errors ' + s.errors
 		);
+		if (s.mode) { $mode.val(s.mode); }
 		$start.prop('disabled', !!s.running);
 		$stop.prop('disabled', !s.running);
 		$resume.prop('disabled', !resumable).toggle(!!resumable);

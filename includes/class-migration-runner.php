@@ -27,6 +27,11 @@ class Migration_Runner {
 	// How many times the post-batch persist re-reads and retries its CAS when a
 	// concurrent stop()/start() write keeps winning the race.
 	const PERSIST_RETRIES = 5;
+	// How many full passes a run makes. The cursor advances past attachments
+	// that errored (so a bad item can't stall forward progress), so when a pass
+	// finishes with errors we re-scan from the start to retry them — already-
+	// done items skip fast. Bounded so permanent failures can't loop forever.
+	const MAX_PASSES = 3;
 	// Long enough that a healthy batch (up to BATCH items, each able to block
 	// on a remote download) is never mistaken for a crashed worker; the
 	// compare-and-swap in acquire_lock() is the actual correctness guarantee,
@@ -69,6 +74,8 @@ class Migration_Runner {
 			'mode'        => 'upload', // upload | dry-run | verify
 			'run_id'      => '',       // Identifies the active run (see run_one_batch).
 			'fail_streak' => 0,        // Consecutive whole-batch failures (circuit breaker).
+			'pass'        => 1,        // Current pass number (failed items retried up to MAX_PASSES).
+			'pass_errors' => 0,        // Per-item errors recorded in the current pass.
 			'cursor'      => '',
 			'processed'   => 0,
 			'uploaded'    => 0,
@@ -142,9 +149,11 @@ class Migration_Runner {
 		}
 		$state['running']     = true;
 		$state['finished_at'] = 0;
-		// Fresh run token so any stale worker from the stopped run discards its
-		// write instead of clobbering the resumed run.
-		$state['run_id']      = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : uniqid( '', true );
+		// KEEP the existing run_id: a worker from before the stop may still be
+		// finishing its batch. Same token means it persists its completed
+		// cursor/counters normally instead of discarding them as stale — so a
+		// quick Stop→Resume can't lose (and reprocess) that batch. (start()
+		// mints a new token precisely because it DOES want to invalidate them.)
 		$state['fail_streak'] = 0;
 		$state['total']       = $this->count_attachments();
 		update_option( self::STATE_OPTION, $state, false );
@@ -232,6 +241,7 @@ class Migration_Runner {
 				$state['uploaded']  += (int) $result['uploaded'];
 				$state['skipped']   += (int) $result['skipped'];
 				$state['errors']    += count( $result['errors'] );
+				$state['pass_errors'] += count( $result['errors'] );
 				$state['bytes']     += (int) $result['bytes'];
 				$state['cursor']     = (string) $result['next_cursor'];
 				$state['fail_streak'] = 0; // Batch completed — clear the breaker.
@@ -246,6 +256,23 @@ class Migration_Runner {
 				++$state['fail_streak'];
 				$state['last_error'] = $e->getMessage();
 				$result              = array( 'done' => false );
+			}
+
+			// Multi-pass: the cursor advances past attachments that errored, so a
+			// pass can finish with items still un-migrated. If this pass reached
+			// the end but recorded errors, re-scan from the start to retry them
+			// (already-done items skip fast). Bounded by MAX_PASSES so a
+			// permanently-failing item can't loop forever.
+			if (
+				! empty( $result['done'] )
+				&& (int) $state['pass_errors'] > 0
+				&& (int) $state['pass'] < self::MAX_PASSES
+			) {
+				$state['pass']        = (int) $state['pass'] + 1;
+				$state['pass_errors'] = 0;
+				$state['processed']   = 0;     // Re-count progress for the new pass.
+				$state['cursor']      = '';    // Re-scan from the first attachment.
+				$result['done']       = false; // Keep the run going.
 			}
 
 			// Reconcile-and-persist. A concurrent stop()/start() can change the

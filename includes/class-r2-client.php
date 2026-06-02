@@ -245,6 +245,11 @@ class R2_Client {
 		// Stateless restore) never has to fit in PHP memory.
 		$response = $this->request( 'GET', '/' . ltrim( $key, '/' ), array(), '', array(), $local_path );
 		if ( is_wp_error( $response ) ) {
+			// A transport error mid-stream can leave a partial file behind;
+			// WordPress doesn't clean it up, so we do.
+			if ( file_exists( $local_path ) ) {
+				wp_delete_file( $local_path );
+			}
 			return $response;
 		}
 		$code = (int) wp_remote_retrieve_response_code( $response );
