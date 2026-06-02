@@ -183,6 +183,50 @@ class Settings {
 	}
 
 	/**
+	 * Enumerate an attachment's files — the original plus every registered size
+	 * — as uploads-relative paths. Single source of truth so the offloader,
+	 * migrator and delete path can never disagree on which files an attachment
+	 * comprises. The original is always first.
+	 *
+	 * @param array  $metadata Attachment metadata (wp_get_attachment_metadata()).
+	 * @param string $relative Original `_wp_attached_file` path.
+	 * @return array<int,array{relative:string,size:string,filename:string}>
+	 */
+	public static function enumerate_files( $metadata, $relative ) {
+		$relative = (string) $relative;
+		if ( '' === $relative ) {
+			return array();
+		}
+
+		$dir = dirname( $relative );
+		$dir = ( '.' === $dir || '' === $dir ) ? '' : trailingslashit( $dir );
+
+		$files = array(
+			array(
+				'relative' => $relative,
+				'size'     => '',
+				'filename' => wp_basename( $relative ),
+			),
+		);
+
+		if ( is_array( $metadata ) && ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+			foreach ( $metadata['sizes'] as $size_name => $size_data ) {
+				if ( empty( $size_data['file'] ) ) {
+					continue;
+				}
+				$filename = (string) $size_data['file'];
+				$files[]  = array(
+					'relative' => $dir . $filename,
+					'size'     => (string) $size_name,
+					'filename' => $filename,
+				);
+			}
+		}
+
+		return $files;
+	}
+
+	/**
 	 * Is the plugin fully configured to talk to R2?
 	 *
 	 * @return bool

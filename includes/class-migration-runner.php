@@ -20,6 +20,10 @@ class Migration_Runner {
 	const CRON_HOOK    = 'r2offload_migrate_tick';
 	const BATCH        = 100;
 	const LOCK_OPTION  = 'r2offload_migration_lock';
+	// Abort a run after this many consecutive whole-batch failures, so a
+	// persistently-throwing batch (e.g. corrupt metadata) can't spin the cron
+	// forever. Reset to zero on any batch that completes.
+	const MAX_FAIL_STREAK = 5;
 	// Long enough that a healthy batch (up to BATCH items, each able to block
 	// on a remote download) is never mistaken for a crashed worker; the
 	// compare-and-swap in acquire_lock() is the actual correctness guarantee,
@@ -61,6 +65,7 @@ class Migration_Runner {
 			'running'     => false,
 			'mode'        => 'upload', // upload | dry-run | verify
 			'run_id'      => '',       // Identifies the active run (see run_one_batch).
+			'fail_streak' => 0,        // Consecutive whole-batch failures (circuit breaker).
 			'cursor'      => '',
 			'processed'   => 0,
 			'uploaded'    => 0,
@@ -188,13 +193,16 @@ class Migration_Runner {
 				$state['errors']    += count( $result['errors'] );
 				$state['bytes']     += (int) $result['bytes'];
 				$state['cursor']     = (string) $result['next_cursor'];
+				$state['fail_streak'] = 0; // Batch completed — clear the breaker.
 				if ( ! empty( $result['errors'] ) ) {
 					$state['last_error'] = (string) end( $result['errors'] );
 				}
 			} catch ( \Throwable $e ) {
 				// Record the failure and let the next tick retry rather than
-				// killing the run (and leaking the lock).
+				// killing the run (and leaking the lock). A persistent throw is
+				// caught by the circuit breaker below.
 				++$state['errors'];
+				++$state['fail_streak'];
 				$state['last_error'] = $e->getMessage();
 				$result              = array( 'done' => false );
 			}
@@ -219,6 +227,24 @@ class Migration_Runner {
 				// job can resume, but honour the stop: stay stopped, don't
 				// reschedule.
 				$state['running'] = false;
+				if ( $this->cas_state( $expected_raw, $state ) ) {
+					$this->clear_scheduled();
+				}
+				return $this->state();
+			}
+
+			// Circuit breaker: too many consecutive whole-batch failures means
+			// the batch can't make progress (e.g. corrupt metadata at the
+			// cursor). Abort the run instead of rescheduling another doomed tick.
+			if ( (int) $state['fail_streak'] >= self::MAX_FAIL_STREAK ) {
+				$state['running']     = false;
+				$state['finished_at'] = time();
+				$state['last_error']  = sprintf(
+					/* translators: 1: number of failures, 2: last error message */
+					__( 'Migration aborted after %1$d consecutive batch failures. Last error: %2$s', 'r2-stateless-media-offload' ),
+					(int) $state['fail_streak'],
+					(string) $state['last_error']
+				);
 				if ( $this->cas_state( $expected_raw, $state ) ) {
 					$this->clear_scheduled();
 				}

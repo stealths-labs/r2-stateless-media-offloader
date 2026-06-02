@@ -178,24 +178,13 @@ class Offloader {
 
 		$uploads = wp_get_upload_dir();
 		$basedir = trailingslashit( $uploads['basedir'] );
-		$subdir  = dirname( $relative );
-		$prefix  = ( '.' === $subdir ) ? '' : trailingslashit( $subdir );
 
+		// Shared enumeration (original + every registered size). Local path is
+		// the uploads-relative path; the R2 key routes through object_key() to
+		// apply the configured path_prefix.
 		$files = array();
-
-		// Original. Local path uses the uploads-relative path; the R2 key
-		// routes through object_key() to apply the configured path_prefix.
-		$files[ $basedir . $relative ] = $this->settings->object_key( $relative );
-
-		// Every registered size (incl. theme/plugin custom sizes).
-		if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
-			foreach ( $metadata['sizes'] as $size ) {
-				if ( empty( $size['file'] ) ) {
-					continue;
-				}
-				$relative_size                     = $prefix . $size['file'];
-				$files[ $basedir . $relative_size ] = $this->settings->object_key( $relative_size );
-			}
+		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
+			$files[ $basedir . $file['relative'] ] = $this->settings->object_key( $file['relative'] );
 		}
 
 		return $files;

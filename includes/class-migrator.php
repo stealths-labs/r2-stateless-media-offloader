@@ -237,38 +237,24 @@ class Migrator {
 	 * @return array<string,array{key:string,size:string,filename:string}>
 	 */
 	private function build_items( $attachment_id, $relative ) {
-		$dir = dirname( $relative );
-		$dir = ( '' === $dir || '.' === $dir ) ? '' : trailingslashit( $dir );
-
-		// R2 keys route through Settings::object_key() so the configured
-		// path_prefix is applied consistently with the offloader (SWR-313).
-		// Key the items map by the computed object key so dedup against sizes
-		// works even when a path_prefix is set.
-		$items        = array();
-		$original_key = $this->settings->object_key( $relative );
-		$items[ $original_key ] = array(
-			'key'      => $original_key,
-			'size'     => '',
-			'filename' => wp_basename( $relative ),
-		);
-
+		// Shared enumeration (original + every size) so the migrator and the
+		// offloader can never disagree on an attachment's file set. R2 keys
+		// route through Settings::object_key() so the configured path_prefix is
+		// applied consistently (SWR-313). The map is keyed by computed object
+		// key so dedup against sizes works even when a path_prefix is set.
 		$metadata = wp_get_attachment_metadata( $attachment_id );
-		if ( is_array( $metadata ) && ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
-			foreach ( $metadata['sizes'] as $size_name => $size_data ) {
-				if ( empty( $size_data['file'] ) ) {
-					continue;
-				}
-				$filename = (string) $size_data['file'];
-				$key      = $this->settings->object_key( $dir . $filename );
-				if ( isset( $items[ $key ] ) ) {
-					continue; // Sizes can share a filename with the original.
-				}
-				$items[ $key ] = array(
-					'key'      => $key,
-					'size'     => (string) $size_name,
-					'filename' => $filename,
-				);
+
+		$items = array();
+		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
+			$key = $this->settings->object_key( $file['relative'] );
+			if ( isset( $items[ $key ] ) ) {
+				continue; // Sizes can share a filename with the original.
 			}
+			$items[ $key ] = array(
+				'key'      => $key,
+				'size'     => $file['size'],
+				'filename' => $file['filename'],
+			);
 		}
 
 		return $items;
