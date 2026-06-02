@@ -146,55 +146,66 @@ class Migration_Runner {
 		// the token now and re-validate before persisting (see below).
 		$run_id = (string) $state['run_id'];
 
-		$migrator = new Migrator( null, $this->settings );
-		$migrator->set_dry_run( 'dry-run' === $state['mode'] )
-			->set_verify( 'verify' === $state['mode'] );
+		// try/finally so the lock is ALWAYS released — a fatal in migrate_batch()
+		// must never strand it and block all progress until the TTL expires.
+		try {
+			try {
+				$migrator = new Migrator( null, $this->settings );
+				$migrator->set_dry_run( 'dry-run' === $state['mode'] )
+					->set_verify( 'verify' === $state['mode'] );
 
-		$result = $migrator->migrate_batch( self::BATCH, (string) $state['cursor'] );
+				$result = $migrator->migrate_batch( self::BATCH, (string) $state['cursor'] );
 
-		$state['processed'] += (int) $result['processed'];
-		$state['uploaded']  += (int) $result['uploaded'];
-		$state['skipped']   += (int) $result['skipped'];
-		$state['errors']    += count( $result['errors'] );
-		$state['bytes']     += (int) $result['bytes'];
-		$state['cursor']     = (string) $result['next_cursor'];
-		if ( ! empty( $result['errors'] ) ) {
-			$state['last_error'] = (string) end( $result['errors'] );
-		}
+				$state['processed'] += (int) $result['processed'];
+				$state['uploaded']  += (int) $result['uploaded'];
+				$state['skipped']   += (int) $result['skipped'];
+				$state['errors']    += count( $result['errors'] );
+				$state['bytes']     += (int) $result['bytes'];
+				$state['cursor']     = (string) $result['next_cursor'];
+				if ( ! empty( $result['errors'] ) ) {
+					$state['last_error'] = (string) end( $result['errors'] );
+				}
+			} catch ( \Throwable $e ) {
+				// Record the failure and let the next tick retry rather than
+				// killing the run (and leaking the lock).
+				++$state['errors'];
+				$state['last_error'] = $e->getMessage();
+				$result              = array( 'done' => false );
+			}
 
-		// Re-read the control plane after the (potentially slow) batch. If a
-		// newer start() superseded this run, or a stop() was requested, respect
-		// that decision instead of blindly writing our snapshot back.
-		$current = $this->state();
-		if ( (string) $current['run_id'] !== $run_id ) {
-			// A different run owns the state now — discard our writes entirely.
-			$this->release_lock();
-			return $current;
-		}
+			// Re-read the control plane after the (potentially slow) batch. If a
+			// newer start() superseded this run, or a stop() was requested,
+			// respect that decision instead of blindly writing our snapshot back.
+			$current = $this->state();
+			if ( (string) $current['run_id'] !== $run_id ) {
+				// A different run owns the state now — discard our writes entirely.
+				return $current;
+			}
 
-		if ( empty( $current['running'] ) ) {
-			// stop() landed mid-batch. Persist the progress we made so the job
-			// can resume, but honour the stop: stay stopped, don't reschedule.
-			$state['running'] = false;
+			if ( empty( $current['running'] ) ) {
+				// stop() landed mid-batch. Persist the progress we made so the
+				// job can resume, but honour the stop: stay stopped, don't
+				// reschedule.
+				$state['running'] = false;
+				update_option( self::STATE_OPTION, $state, false );
+				$this->clear_scheduled();
+				return $state;
+			}
+
+			if ( ! empty( $result['done'] ) ) {
+				$state['running']     = false;
+				$state['finished_at'] = time();
+				update_option( self::STATE_OPTION, $state, false );
+				$this->clear_scheduled();
+				return $state;
+			}
+
 			update_option( self::STATE_OPTION, $state, false );
-			$this->clear_scheduled();
-			$this->release_lock();
+			$this->schedule_next();
 			return $state;
-		}
-
-		if ( ! empty( $result['done'] ) ) {
-			$state['running']     = false;
-			$state['finished_at'] = time();
-			update_option( self::STATE_OPTION, $state, false );
-			$this->clear_scheduled();
+		} finally {
 			$this->release_lock();
-			return $state;
 		}
-
-		update_option( self::STATE_OPTION, $state, false );
-		$this->schedule_next();
-		$this->release_lock();
-		return $state;
 	}
 
 	/**
