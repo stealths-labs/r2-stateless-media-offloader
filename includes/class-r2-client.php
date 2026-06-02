@@ -236,29 +236,33 @@ class R2_Client {
 	 * @return true|\WP_Error
 	 */
 	public function download_object( $key, $local_path ) {
-		$response = $this->request( 'GET', '/' . ltrim( $key, '/' ) );
-		if ( is_wp_error( $response ) ) {
-			return $response;
-		}
-		$code = (int) wp_remote_retrieve_response_code( $response );
-		if ( $code < 200 || $code > 299 ) {
-			return new \WP_Error( 'r2offload_download_failed', sprintf( /* translators: %d: HTTP status */ __( 'Download failed HTTP %d', 'r2-stateless-media-offload' ), $code ) );
-		}
-
 		$dir = dirname( $local_path );
 		if ( ! is_dir( $dir ) ) {
 			wp_mkdir_p( $dir );
 		}
 
-		$body  = wp_remote_retrieve_body( $response );
-		$bytes = file_put_contents( $local_path, $body ); // phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents
-		if ( false === $bytes ) {
+		// Stream the body straight to disk so a large object (e.g. video in a
+		// Stateless restore) never has to fit in PHP memory.
+		$response = $this->request( 'GET', '/' . ltrim( $key, '/' ), array(), '', array(), $local_path );
+		if ( is_wp_error( $response ) ) {
+			return $response;
+		}
+		$code = (int) wp_remote_retrieve_response_code( $response );
+		if ( $code < 200 || $code > 299 ) {
+			// On a non-2xx the error body was streamed to the file; discard it.
+			if ( file_exists( $local_path ) ) {
+				wp_delete_file( $local_path );
+			}
+			return new \WP_Error( 'r2offload_download_failed', sprintf( /* translators: %d: HTTP status */ __( 'Download failed HTTP %d', 'r2-stateless-media-offload' ), $code ) );
+		}
+
+		if ( ! file_exists( $local_path ) ) {
 			return new \WP_Error( 'r2offload_write_failed', __( 'Could not write downloaded object to disk.', 'r2-stateless-media-offload' ) );
 		}
 
 		// Guard against a truncated download: compare against Content-Length.
 		$len = wp_remote_retrieve_header( $response, 'content-length' );
-		if ( '' !== (string) $len && (int) $len !== $bytes ) {
+		if ( '' !== (string) $len && (int) $len !== (int) filesize( $local_path ) ) {
 			wp_delete_file( $local_path );
 			return new \WP_Error( 'r2offload_download_incomplete', __( 'Downloaded object was incomplete.', 'r2-stateless-media-offload' ) );
 		}
@@ -313,9 +317,12 @@ class R2_Client {
 	 * @param array  $query_params
 	 * @param string $body
 	 * @param array  $extra_headers
+	 * @param string $stream_to Absolute path to stream the response body into,
+	 *                          instead of buffering it in memory. For large
+	 *                          downloads (e.g. video restores in Stateless mode).
 	 * @return array|\WP_Error
 	 */
-	private function request( $method, $path, $query_params = array(), $body = '', $extra_headers = array() ) {
+	private function request( $method, $path, $query_params = array(), $body = '', $extra_headers = array(), $stream_to = '' ) {
 		if ( ! $this->settings->is_configured() ) {
 			return new \WP_Error( 'r2offload_not_configured', __( 'R2 credentials are not configured.', 'r2-stateless-media-offload' ) );
 		}
@@ -408,6 +415,12 @@ class R2_Client {
 			'timeout'   => 60,
 			'sslverify' => true,
 		);
+		if ( '' !== $stream_to ) {
+			// Stream the response straight to disk — the body never sits in
+			// PHP memory, so large objects can't exhaust the heap.
+			$args['stream']   = true;
+			$args['filename'] = $stream_to;
+		}
 
 		// Retry with linear backoff on transient transport errors / 5xx.
 		$attempt = 0;

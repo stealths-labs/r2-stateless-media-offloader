@@ -59,9 +59,17 @@ $r2offload_configured = $settings->is_configured();
 		</tr>
 	</table>
 
+	<?php
+	$r2offload_resumable = empty( $state['running'] )
+		&& empty( $state['finished_at'] )
+		&& ( (int) $state['started_at'] > 0 || '' !== (string) $state['cursor'] );
+	?>
 	<p>
 		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( ! $r2offload_configured || ! empty( $state['running'] ) ); ?>>
 			<?php esc_html_e( 'Start', 'r2-stateless-media-offload' ); ?>
+		</button>
+		<button type="button" class="button" id="r2offload-mig-resume" <?php disabled( ! $r2offload_resumable ); ?> style="<?php echo $r2offload_resumable ? '' : 'display:none;'; ?>">
+			<?php esc_html_e( 'Resume', 'r2-stateless-media-offload' ); ?>
 		</button>
 		<button type="button" class="button" id="r2offload-mig-stop" <?php disabled( empty( $state['running'] ) ); ?>>
 			<?php esc_html_e( 'Stop', 'r2-stateless-media-offload' ); ?>

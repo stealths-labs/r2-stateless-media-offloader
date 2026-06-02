@@ -129,6 +129,44 @@ class Migration_Runner {
 	}
 
 	/**
+	 * Resume a stopped-but-unfinished migration from where it left off —
+	 * keeping the cursor and counters that stop() preserved. No-op (returns
+	 * state unchanged) if a run is already active or there's nothing to resume.
+	 *
+	 * @return array New state.
+	 */
+	public function resume() {
+		$state = $this->fresh_state();
+		if ( ! empty( $state['running'] ) || ! $this->is_resumable( $state ) ) {
+			return $state;
+		}
+		$state['running']     = true;
+		$state['finished_at'] = 0;
+		// Fresh run token so any stale worker from the stopped run discards its
+		// write instead of clobbering the resumed run.
+		$state['run_id']      = function_exists( 'wp_generate_uuid4' ) ? wp_generate_uuid4() : uniqid( '', true );
+		$state['fail_streak'] = 0;
+		$state['total']       = $this->count_attachments();
+		update_option( self::STATE_OPTION, $state, false );
+
+		$this->schedule_next();
+		return $state;
+	}
+
+	/**
+	 * Whether a (non-running) state represents a migration that was stopped
+	 * before completing and so can be resumed.
+	 *
+	 * @param array $state
+	 * @return bool
+	 */
+	public function is_resumable( array $state ) {
+		return empty( $state['running'] )
+			&& empty( $state['finished_at'] )
+			&& ( (int) $state['started_at'] > 0 || '' !== (string) $state['cursor'] );
+	}
+
+	/**
 	 * Stop a running migration. Progress is preserved so it can be resumed.
 	 *
 	 * @return array New state.

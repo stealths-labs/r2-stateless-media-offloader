@@ -36,6 +36,7 @@ class Admin_Migration {
 		add_action( 'admin_menu', array( $this, 'add_menu_page' ) );
 		add_action( 'admin_enqueue_scripts', array( $this, 'enqueue' ) );
 		add_action( 'wp_ajax_r2offload_migrate_start', array( $this, 'ajax_start' ) );
+		add_action( 'wp_ajax_r2offload_migrate_resume', array( $this, 'ajax_resume' ) );
 		add_action( 'wp_ajax_r2offload_migrate_stop', array( $this, 'ajax_stop' ) );
 		add_action( 'wp_ajax_r2offload_migrate_status', array( $this, 'ajax_status' ) );
 	}
@@ -78,19 +79,22 @@ class Admin_Migration {
 jQuery(function($){
 	var $bar = $('#r2offload-mig-bar'), $txt = $('#r2offload-mig-text');
 	var $start = $('#r2offload-mig-start'), $stop = $('#r2offload-mig-stop');
+	var $resume = $('#r2offload-mig-resume');
 	var $mode = $('#r2offload-mig-mode');
 	var polling = false;
 
 	function render(s){
 		var pct = s.total > 0 ? Math.min(100, Math.round((s.processed / s.total) * 100)) : 0;
 		$bar.css('width', pct + '%').text(pct + '%');
+		var resumable = !s.running && !s.finished_at && ((s.started_at > 0) || s.cursor);
 		$txt.text(
-			(s.running ? 'Running' : (s.finished_at ? 'Done' : 'Idle')) +
+			(s.running ? 'Running' : (s.finished_at ? 'Done' : (resumable ? 'Stopped' : 'Idle'))) +
 			' — ' + s.processed + ' / ' + s.total + ' processed' +
 			'  ·  uploaded ' + s.uploaded + '  ·  skipped ' + s.skipped + '  ·  errors ' + s.errors
 		);
 		$start.prop('disabled', !!s.running);
 		$stop.prop('disabled', !s.running);
+		$resume.prop('disabled', !resumable).toggle(!!resumable);
 		$mode.prop('disabled', !!s.running);
 	}
 	function poll(){
@@ -108,6 +112,10 @@ jQuery(function($){
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } });
+	});
+	$resume.on('click', function(){
+		$.post(ajaxurl, { action:'r2offload_migrate_resume', nonce:R2OFFLOAD_MIG.nonce })
+			.done(function(res){ if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } } });
 	});
 	$stop.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_stop', nonce:R2OFFLOAD_MIG.nonce })
@@ -131,6 +139,17 @@ JS;
 			wp_send_json_error( array( 'message' => __( 'Configure R2 credentials first.', 'r2-stateless-media-offload' ) ) );
 		}
 		wp_send_json_success( $this->runner->start( $mode ) );
+	}
+
+	/**
+	 * AJAX: resume a stopped migration from where it left off.
+	 */
+	public function ajax_resume() {
+		$this->guard();
+		if ( ! $this->settings->is_configured() ) {
+			wp_send_json_error( array( 'message' => __( 'Configure R2 credentials first.', 'r2-stateless-media-offload' ) ) );
+		}
+		wp_send_json_success( $this->runner->resume() );
 	}
 
 	/**
