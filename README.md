@@ -51,5 +51,3 @@ GPL-2.0-or-later. See [LICENSE](LICENSE).
 ---
 
 *A clean-room implementation — owes its code to no other plugin. Built while optimising a production WordPress deployment.*
-
-See also: [`gh-manager-cli`](https://github.com/wiiiimm/gh-manager-cli) — another open-source tool by wiiiimm.
