@@ -109,11 +109,15 @@ class CLI {
 	 * [--verify]
 	 * : HEAD-check expected keys in R2 and report any that are missing.
 	 *
+	 * [--timeout=<seconds>]
+	 * : Per-file download timeout for remote fetches (default: 300).
+	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp r2offload sync --dry-run
 	 *     wp r2offload sync --batch=250
 	 *     wp r2offload sync --verify
+	 *     wp r2offload sync --timeout=900   # libraries with large video
 	 *
 	 * @when after_wp_load
 	 */
@@ -128,13 +132,16 @@ class CLI {
 			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
 		}
 
-		$batch = isset( $assoc_args['batch'] ) ? max( 1, (int) $assoc_args['batch'] ) : 100;
+		$batch   = isset( $assoc_args['batch'] ) ? max( 1, (int) $assoc_args['batch'] ) : 100;
+		$timeout = isset( $assoc_args['timeout'] ) ? max( 1, (int) $assoc_args['timeout'] ) : 300;
 
 		$migrator = new Migrator();
-		$migrator->set_dry_run( $dry_run )->set_verify( $verify );
+		$migrator->set_dry_run( $dry_run )
+			->set_verify( $verify )
+			->set_download_timeout( $timeout );
 
 		$mode = $verify ? 'verify' : ( $dry_run ? 'dry-run' : 'upload' );
-		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d', $mode, $batch ) );
+		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d   Download timeout: %ds', $mode, $batch, $timeout ) );
 		\WP_CLI::log( '' );
 
 		$cursor = '';

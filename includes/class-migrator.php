@@ -44,6 +44,14 @@ class Migrator {
 	private $verify = false;
 
 	/**
+	 * Per-file download timeout in seconds. Matches WordPress's own
+	 * `download_url()` default so large videos / PDFs aren't truncated.
+	 *
+	 * @var int
+	 */
+	private $download_timeout = 300;
+
+	/**
 	 * @param R2_Client|null $client
 	 * @param Settings|null  $settings
 	 */
@@ -71,6 +79,18 @@ class Migrator {
 	 */
 	public function set_verify( $on ) {
 		$this->verify = (bool) $on;
+		return $this;
+	}
+
+	/**
+	 * Override the per-file download timeout (seconds). Useful for libraries
+	 * that contain large media (video / hi-res PDFs).
+	 *
+	 * @param int $seconds
+	 * @return self
+	 */
+	public function set_download_timeout( $seconds ) {
+		$this->download_timeout = max( 1, (int) $seconds );
 		return $this;
 	}
 
@@ -449,7 +469,7 @@ class Migrator {
 		if ( ! function_exists( 'download_url' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/file.php';
 		}
-		$tmp = download_url( $url, 60 );
+		$tmp = download_url( $url, $this->download_timeout );
 		if ( is_wp_error( $tmp ) ) {
 			return $tmp;
 		}
