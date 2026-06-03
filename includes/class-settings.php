@@ -305,7 +305,35 @@ class Settings {
 	 * @return bool
 	 */
 	public function serves_public_url() {
-		return '' !== (string) $this->get( 'custom_domain' );
+		return '' !== $this->public_base_url();
+	}
+
+	/**
+	 * The normalized public base URL for the configured custom domain — scheme +
+	 * host (+ any subpath), no trailing slash — or '' when no USABLE domain is set.
+	 *
+	 * Centralizes the messy ways a domain can be entered (scheme-less, http/https,
+	 * trailing slash, protocol-relative `//host`) so serves_public_url() and the
+	 * object-URL builder always agree. Crucially it rejects a value with no real
+	 * host (e.g. a bare `https://`, or a stray/whitespace wp-config constant that
+	 * bypasses UI sanitization): otherwise serves_public_url() would be true and
+	 * the rewriter would emit host-less broken URLs for EVERY image — catastrophic
+	 * in Stateless mode, where the local files have already been deleted.
+	 *
+	 * @return string e.g. 'https://cdn.example.com' or 'https://cdn.example.com/media', or ''.
+	 */
+	public function public_base_url() {
+		$domain = trim( (string) $this->get( 'custom_domain' ) );
+		if ( '' === $domain ) {
+			return '';
+		}
+		$domain = (string) preg_replace( '#^/+#', '', $domain ); // Drop protocol-relative / stray leading slashes.
+		if ( ! preg_match( '#^https?://#i', $domain ) ) {
+			$domain = 'https://' . $domain;                      // Default to https when no scheme was given.
+		}
+		$domain = rtrim( $domain, '/' );
+		$host   = wp_parse_url( $domain, PHP_URL_HOST );
+		return ( is_string( $host ) && '' !== $host ) ? $domain : '';
 	}
 
 	/**

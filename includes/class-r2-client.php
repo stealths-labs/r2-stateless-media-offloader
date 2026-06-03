@@ -291,7 +291,13 @@ class R2_Client {
 		// entirely if the body was content-encoded (e.g. an intermediary gzipped
 		// it): the on-disk byte count then legitimately differs from the
 		// declared length, and comparing would delete a valid file.
-		$encoding      = (string) wp_remote_retrieve_header( $response, 'content-encoding' );
+		$encoding = (string) wp_remote_retrieve_header( $response, 'content-encoding' );
+		// "identity" explicitly means NO transformation (RFC 7231) — the body is
+		// unencoded, so Content-Length is the real size and the check must apply.
+		// We request Accept-Encoding: identity, so a server may echo it back here.
+		if ( 'identity' === strtolower( trim( $encoding ) ) ) {
+			$encoding = '';
+		}
 		$len           = wp_remote_retrieve_header( $response, 'content-length' );
 		$expected_size = ( '' !== (string) $len ) ? (int) $len : $this->remote_object_size( $key );
 		$actual_size   = filesize( $local_path );
@@ -323,17 +329,13 @@ class R2_Client {
 		// Percent-encode each key segment so the served URL is valid for keys
 		// with spaces / non-ASCII characters (no-op for plain ASCII keys). The
 		// edge/origin decodes it back to the raw object key on lookup.
-		$path   = $this->encode_path( '/' . ltrim( $key, '/' ) );
-		$domain = $this->settings->get( 'custom_domain' );
-		if ( '' !== $domain ) {
-			$domain = rtrim( $domain, '/' );
-			// Add a scheme only when there genuinely isn't one. A literal
-			// strpos('http') would misfire for a scheme-less host that merely
-			// starts with those letters (e.g. "http-cdn.example.com").
-			if ( ! preg_match( '#^https?://#i', $domain ) ) {
-				$domain = 'https://' . $domain;
-			}
-			return $domain . $path;
+		$path = $this->encode_path( '/' . ltrim( $key, '/' ) );
+		// Settings::public_base_url() centralizes scheme/slash/host normalization
+		// (and returns '' for an unusable domain), so the served URL is always
+		// well-formed and agrees with serves_public_url()'s gate.
+		$base = $this->settings->public_base_url();
+		if ( '' !== $base ) {
+			return $base . $path;
 		}
 		return $this->endpoint() . $path;
 	}
