@@ -90,6 +90,25 @@ class URL_Rewriter {
 		add_filter( 'wp_get_attachment_url', array( $this, 'filter_attachment_url' ), 10, 2 );
 		add_filter( 'wp_get_attachment_image_src', array( $this, 'filter_image_src' ), 10, 4 );
 		add_filter( 'wp_calculate_image_srcset', array( $this, 'filter_srcset' ), 10, 5 );
+		// Big-image full-resolution original — served via its own filter, not
+		// wp_get_attachment_url, so it needs hooking too or it 404s in Stateless
+		// mode once the local copy is removed.
+		add_filter( 'wp_get_original_image_url', array( $this, 'filter_original_image_url' ), 10, 2 );
+	}
+
+	/**
+	 * Rewrite the URL of a big-image upload's full-resolution original.
+	 *
+	 * @param string|false $url
+	 * @param int          $attachment_id
+	 * @return string|false
+	 */
+	public function filter_original_image_url( $url, $attachment_id ) {
+		if ( self::is_suppressed() || ! is_string( $url ) || '' === $url ) {
+			return $url;
+		}
+		$rewritten = $this->rewrite_same_dir( (int) $attachment_id, $url );
+		return ( null !== $rewritten ) ? $rewritten : $url;
 	}
 
 	/**

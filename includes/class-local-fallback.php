@@ -51,7 +51,32 @@ class Local_Fallback {
 		}
 		add_filter( 'get_attached_file', array( $this, 'ensure_local' ), 10, 2 );
 		add_filter( 'load_image_to_edit_path', array( $this, 'ensure_local_for_edit' ), 10, 3 );
+		add_filter( 'wp_get_original_image_path', array( $this, 'ensure_local_original' ), 10, 2 );
 		add_action( 'shutdown', array( $this, 'cleanup' ) );
+	}
+
+	/**
+	 * Restore a big-image upload's full-resolution original (the file named in
+	 * metadata['original_image']) from R2 on demand — WordPress reads it through
+	 * its own path filter, which the other hooks don't cover.
+	 *
+	 * @param string $path
+	 * @param int    $attachment_id
+	 * @return string
+	 */
+	public function ensure_local_original( $path, $attachment_id ) {
+		if ( '' === (string) $path || file_exists( $path ) ) {
+			return $path;
+		}
+		$original = $this->original_key( (int) $attachment_id );
+		if ( false === $original ) {
+			return $path;
+		}
+		$dir = dirname( $original );
+		$dir = ( '.' === $dir || '' === $dir ) ? '' : trailingslashit( $dir );
+		$key = $dir . wp_basename( $path );
+		$tmp = $this->restore_to_temp( $key, wp_basename( $path ), (int) $attachment_id );
+		return ( '' === $tmp ) ? $path : $tmp;
 	}
 
 	/**

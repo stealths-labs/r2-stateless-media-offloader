@@ -195,6 +195,13 @@ class CLI {
 				$pass_errors = 0;
 				$cursor      = '';
 				$done        = false;
+				// A new pass re-walks the whole library. Reset the counts that
+				// describe library state so the summary reflects the FINAL pass,
+				// not the sum of every pass; uploaded/bytes stay cumulative as
+				// they measure real work done across the run.
+				$totals['processed'] = 0;
+				$totals['skipped']   = 0;
+				$totals['errors']    = 0;
 			}
 		} while ( ! $done );
 
