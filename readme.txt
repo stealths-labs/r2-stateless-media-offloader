@@ -1,6 +1,6 @@
 === R2 Stateless Media Offload ===
 Contributors: wiiiimm
-Tags: cloudflare, r2, media, offload, s3, object-storage, cdn, stateless
+Tags: cloudflare, r2, media offload, s3, cdn
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4

@@ -72,6 +72,20 @@ class Migration_Runner {
 	}
 
 	/**
+	 * Plugin-deactivation cleanup: unschedule any pending tick (its callback is
+	 * gone once deactivated) and mark a running migration stopped so it doesn't
+	 * resume mid-batch on reactivation. Static so it can be a deactivation hook.
+	 */
+	public static function on_deactivate() {
+		wp_clear_scheduled_hook( self::CRON_HOOK );
+		$state = get_option( self::STATE_OPTION, array() );
+		if ( is_array( $state ) && ! empty( $state['running'] ) ) {
+			$state['running'] = false;
+			update_option( self::STATE_OPTION, $state, false );
+		}
+	}
+
+	/**
 	 * Default (idle) state shape.
 	 *
 	 * @return array
@@ -244,6 +258,10 @@ class Migration_Runner {
 			// control plane (start()/stop()) changing state meanwhile. We
 			// capture the token now and re-validate before persisting (below).
 			$run_id = (string) $state['run_id'];
+
+			// Defensive default — the catch below also sets it, but this makes
+			// $result unambiguously defined for the post-batch checks regardless.
+			$result = array( 'done' => false );
 
 			try {
 				$migrator = new Migrator( null, $this->settings );
