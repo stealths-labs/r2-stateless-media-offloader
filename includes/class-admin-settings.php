@@ -125,6 +125,10 @@ class Admin_Settings {
 		if ( function_exists( 'wp_set_option_autoload' ) ) {
 			wp_set_option_autoload( Settings::OPTION_KEY, false );
 		}
+		// Drop the Settings instance's memoised copy so any get() that runs after
+		// this save (a hook on the redirect path, or if redirect headers were
+		// already sent) reads the new values rather than the stale ones.
+		$this->settings->flush_request_cache();
 
 		wp_safe_redirect(
 			add_query_arg(

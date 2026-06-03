@@ -228,17 +228,27 @@ class Settings {
 			),
 		);
 
+		// Track files already listed so the same physical file isn't emitted twice:
+		// two registered sizes with identical dimensions share one generated file,
+		// and a size can coincide with the original / original_image. Duplicates
+		// would mean redundant HEAD/upload work during migration.
+		$seen = array( $relative => true );
+
 		// Big-image uploads (WP 5.3+): the attachment points at the down-scaled
 		// "-scaled" file via _wp_attached_file, while the untouched full-res
 		// original is kept alongside it and named in metadata['original_image'].
 		// Include it so it's offloaded/migrated/deleted with everything else.
 		if ( is_array( $metadata ) && ! empty( $metadata['original_image'] ) ) {
-			$orig = (string) $metadata['original_image'];
-			$files[] = array(
-				'relative' => $dir . $orig,
-				'size'     => 'original_image',
-				'filename' => $orig,
-			);
+			$orig     = (string) $metadata['original_image'];
+			$orig_rel = $dir . $orig;
+			if ( ! isset( $seen[ $orig_rel ] ) ) {
+				$seen[ $orig_rel ] = true;
+				$files[]           = array(
+					'relative' => $orig_rel,
+					'size'     => 'original_image',
+					'filename' => $orig,
+				);
+			}
 		}
 
 		if ( is_array( $metadata ) && ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
@@ -247,8 +257,13 @@ class Settings {
 					continue;
 				}
 				$filename = (string) $size_data['file'];
-				$files[]  = array(
-					'relative' => $dir . $filename,
+				$rel      = $dir . $filename;
+				if ( isset( $seen[ $rel ] ) ) {
+					continue;
+				}
+				$seen[ $rel ] = true;
+				$files[]      = array(
+					'relative' => $rel,
 					'size'     => (string) $size_name,
 					'filename' => $filename,
 				);

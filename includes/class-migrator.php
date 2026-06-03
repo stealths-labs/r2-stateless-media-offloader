@@ -639,9 +639,15 @@ class Migrator {
 		if ( $cross_origin ) {
 			add_filter( 'http_request_args', array( $this, 'reject_unsafe_redirects' ) );
 		}
-		$tmp = download_url( $url, $this->download_timeout );
-		if ( $cross_origin ) {
-			remove_filter( 'http_request_args', array( $this, 'reject_unsafe_redirects' ) );
+		// try/finally so the scoped filter is always removed even if download_url()
+		// (or a hook it fires) throws — a leaked filter would reject redirects for
+		// every later HTTP request in the process. Mirrors url_for().
+		try {
+			$tmp = download_url( $url, $this->download_timeout );
+		} finally {
+			if ( $cross_origin ) {
+				remove_filter( 'http_request_args', array( $this, 'reject_unsafe_redirects' ) );
+			}
 		}
 		if ( is_wp_error( $tmp ) ) {
 			return $tmp;
