@@ -177,9 +177,12 @@ class Migrator {
 			&& ( $result['uploaded'] + $result['skipped'] ) > 0
 		) {
 			update_post_meta( $attachment_id, self::META_SYNCED, 1 );
-			// Store the original's actual R2 key (SWR-313) so readers resolve
-			// it independently of the current path_prefix.
-			update_post_meta( $attachment_id, self::META_KEY, $this->settings->object_key( $relative ) );
+			// Store the original's actual R2 key (SWR-313) so readers resolve it
+			// independently of the current path_prefix. base_object_key()
+			// preserves an existing stored key, so a re-sync after a path_prefix
+			// change never rewrites it to the new prefix (which would split it
+			// from where the objects actually live and the rewriter serves).
+			update_post_meta( $attachment_id, self::META_KEY, $this->base_object_key( $attachment_id, $relative ) );
 			// Preserve the original first-sync timestamp on re-runs that find
 			// every item already present in R2.
 			$first_synced_at = get_post_meta( $attachment_id, self::META_SYNCED_AT, true );
@@ -281,15 +284,21 @@ class Migrator {
 	 */
 	private function build_items( $attachment_id, $relative ) {
 		// Shared enumeration (original + every size) so the migrator and the
-		// offloader can never disagree on an attachment's file set. R2 keys
-		// route through Settings::object_key() so the configured path_prefix is
-		// applied consistently (SWR-313). The map is keyed by computed object
-		// key so dedup against sizes works even when a path_prefix is set.
+		// offloader can never disagree on an attachment's file set. Keys anchor
+		// on the attachment's base key — its stored _r2offload_key when already
+		// synced, else the current path_prefix — exactly like the offloader,
+		// delete path and URL rewriter. This keeps re-sync/verify HEADing and
+		// uploading the SAME keys those paths use even after a path_prefix
+		// change (SWR-313), instead of duplicating objects at a new prefix.
 		$metadata = wp_get_attachment_metadata( $attachment_id );
+
+		$base_key = $this->base_object_key( $attachment_id, $relative );
+		$dir      = dirname( $base_key );
+		$dir      = ( '' === $dir || '.' === $dir ) ? '' : trailingslashit( $dir );
 
 		$items = array();
 		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
-			$key = $this->settings->object_key( $file['relative'] );
+			$key = ( '' === $file['size'] ) ? $base_key : $dir . $file['filename'];
 			if ( isset( $items[ $key ] ) ) {
 				continue; // Sizes can share a filename with the original.
 			}
@@ -302,6 +311,21 @@ class Migrator {
 		}
 
 		return $items;
+	}
+
+	/**
+	 * The attachment's canonical R2 key for the original: its stored
+	 * `_r2offload_key` when already synced (so it survives a later path_prefix
+	 * change), else derived from the current path_prefix. Mirrors the offloader
+	 * so every path agrees on keys.
+	 *
+	 * @param int    $attachment_id
+	 * @param string $relative
+	 * @return string
+	 */
+	private function base_object_key( $attachment_id, $relative ) {
+		$stored = (string) get_post_meta( $attachment_id, self::META_KEY, true );
+		return ( '' !== $stored ) ? $stored : $this->settings->object_key( (string) $relative );
 	}
 
 	/**
@@ -542,13 +566,40 @@ class Migrator {
 		// internal endpoint. But the site's OWN media URL is same-origin and
 		// legitimately resolves to a private IP on staging / Docker / k8s — so
 		// pass same-origin URLs through (fetching the site itself isn't SSRF),
-		// and only validate cross-origin URLs.
-		$url_host  = wp_parse_url( $url, PHP_URL_HOST );
-		$home_host = wp_parse_url( home_url(), PHP_URL_HOST );
-		if ( $url_host && $home_host && strtolower( (string) $url_host ) === strtolower( (string) $home_host ) ) {
+		// and only validate cross-origin URLs. Same-origin requires scheme,
+		// host AND port to match — a host-only match would let an attacker reach
+		// a different service on the same hostname via an alternate port/scheme.
+		if ( $this->is_same_origin( $url, home_url() ) ) {
 			return $url;
 		}
 		return wp_http_validate_url( $url ) ? $url : '';
+	}
+
+	/**
+	 * Whether two URLs share the same origin (scheme + host + effective port).
+	 *
+	 * @param string $a
+	 * @param string $b
+	 * @return bool
+	 */
+	private function is_same_origin( $a, $b ) {
+		$pa = wp_parse_url( (string) $a );
+		$pb = wp_parse_url( (string) $b );
+		if ( empty( $pa['host'] ) || empty( $pb['host'] ) ) {
+			return false;
+		}
+		$scheme_a = strtolower( $pa['scheme'] ?? '' );
+		$scheme_b = strtolower( $pb['scheme'] ?? '' );
+		$default  = array(
+			'http'  => 80,
+			'https' => 443,
+		);
+		$port_a = isset( $pa['port'] ) ? (int) $pa['port'] : ( $default[ $scheme_a ] ?? 0 );
+		$port_b = isset( $pb['port'] ) ? (int) $pb['port'] : ( $default[ $scheme_b ] ?? 0 );
+
+		return $scheme_a === $scheme_b
+			&& strtolower( $pa['host'] ) === strtolower( $pb['host'] )
+			&& $port_a === $port_b;
 	}
 
 	/**
