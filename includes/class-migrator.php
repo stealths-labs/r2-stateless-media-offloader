@@ -313,7 +313,7 @@ class Migrator {
 
 		$base_key = $this->base_object_key( $attachment_id, $relative );
 		$dir      = dirname( $base_key );
-		$dir      = ( '' === $dir || '.' === $dir ) ? '' : trailingslashit( $dir );
+		$dir      = ( '.' === $dir ) ? '' : trailingslashit( $dir );
 
 		$items = array();
 		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
@@ -326,10 +326,38 @@ class Migrator {
 				'size'     => $file['size'],
 				'filename' => $file['filename'],
 				'relative' => $file['relative'], // Uploads-relative path (canonical).
+				// Byte size WordPress recorded for this file (original since 6.0,
+				// per-size since 6.1), or null when unknown. Used to verify an
+				// already-in-R2 object during no-local adoption — for free, with no
+				// extra HEAD against the source backend.
+				'filesize' => $this->recorded_filesize( $metadata, $file['size'] ),
 			);
 		}
 
 		return $items;
+	}
+
+	/**
+	 * The byte size WordPress recorded for a file in attachment metadata, or null
+	 * when unknown. WP stores `filesize` for the original (since 6.0) and per size
+	 * (since 6.1); older attachments and the kept full-res `original_image` have
+	 * none. Lets adoption sanity-check an already-in-R2 object without a HEAD.
+	 *
+	 * @param mixed  $metadata wp_get_attachment_metadata() result.
+	 * @param string $size     '' for the original, 'original_image', or a size name.
+	 * @return int|null
+	 */
+	private function recorded_filesize( $metadata, $size ) {
+		if ( ! is_array( $metadata ) ) {
+			return null;
+		}
+		if ( '' === $size ) {
+			return isset( $metadata['filesize'] ) ? (int) $metadata['filesize'] : null;
+		}
+		if ( 'original_image' === $size ) {
+			return null; // WP records no filesize for the retained full-res original.
+		}
+		return isset( $metadata['sizes'][ $size ]['filesize'] ) ? (int) $metadata['sizes'][ $size ]['filesize'] : null;
 	}
 
 	/**
@@ -385,20 +413,27 @@ class Migrator {
 		// so its preview counts/sizes reflect what an upload would actually skip
 		// rather than overstating the remaining work.
 		//
-		// When we have a local copy, confirm the R2 object is the SAME size
-		// before trusting it — a mismatch (wrong/partial object at the computed
-		// key) must re-upload rather than be silently adopted, since adoption
-		// marks the attachment synced and authorises deleting the local copy in
-		// Stateless mode. Without a local copy we trust existence (the operator
-		// can run verify mode for a full check).
+		// Confirm an existing R2 object is the SAME size before trusting it — a
+		// mismatch (wrong/partial object at the computed key) must re-upload rather
+		// than be silently adopted, since adoption marks the attachment synced and
+		// authorises deleting the local copy in Stateless mode.
+		//   - With a local copy: compare against filesize(local).
+		//   - Without a local copy (the migrate-from-GCS/S3 case): compare against
+		//     the size WordPress recorded in metadata, when it has one — this
+		//     catches a truncated/wrong externally-copied object for free, without
+		//     a HEAD against the source backend (which would reintroduce the egress
+		//     the migration is eliminating). When neither side's size is known we
+		//     keep adopting on existence (operators can run verify mode).
 		$head = $this->client->head_object( $key );
 		if ( null !== $head ) {
-			// With a local copy we must be able to confirm the R2 object is the
-			// same size — if the HEAD omitted Content-Length we can't, so don't
-			// adopt (re-upload instead). Without a local copy we trust existence.
-			$size_ok = $has_local
-				? ( null !== $head['size'] && (int) filesize( $local ) === (int) $head['size'] )
-				: true;
+			if ( $has_local ) {
+				// If the HEAD omitted Content-Length we can't confirm — re-upload.
+				$size_ok = ( null !== $head['size'] && (int) filesize( $local ) === (int) $head['size'] );
+			} elseif ( null !== $head['size'] && null !== $item['filesize'] ) {
+				$size_ok = ( (int) $head['size'] === (int) $item['filesize'] );
+			} else {
+				$size_ok = true; // No comparable sizes — trust existence.
+			}
 			if ( $size_ok ) {
 				$result['skipped'] += 1;
 				return;
@@ -570,15 +605,33 @@ class Migrator {
 		URL_Rewriter::suppress( true );
 		try {
 			$base = wp_get_attachment_url( $attachment_id );
+			// For a registered intermediate size, let the active offloader compute
+			// the per-size source URL — it may map sizes to a different path/host
+			// than a plain basename swap. Only trust it when it actually resolved
+			// THIS file (basename match): a deregistered size makes
+			// wp_get_attachment_image_src fall back to another size / the full
+			// image, which we must NOT fetch as this size's source.
+			$size_url = '';
+			if ( '' !== $size && 'original_image' !== $size ) {
+				$src = wp_get_attachment_image_src( $attachment_id, $size );
+				if ( is_array( $src ) && ! empty( $src[0] ) && $this->url_basename( $src[0] ) === $item['filename'] ) {
+					$size_url = (string) $src[0];
+				}
+			}
 		} finally {
 			URL_Rewriter::suppress( false );
 		}
 		if ( ! is_string( $base ) || '' === $base ) {
 			return '';
 		}
-		if ( '' === $size ) {
+		if ( '' !== $size_url ) {
+			$url = $size_url;
+		} elseif ( '' === $size ) {
 			$url = $base;
 		} else {
+			// Fallback: assume the size is a sibling basename in the original's
+			// directory — true for local, wp-stateless (GCS) and WP Offload Media
+			// (S3) default layouts.
 			$pos = strrpos( $base, '/' );
 			$url = ( false === $pos ) ? $base : substr( $base, 0, $pos + 1 ) . $item['filename'];
 		}
@@ -596,6 +649,18 @@ class Migrator {
 			return $url;
 		}
 		return wp_http_validate_url( $url ) ? $url : '';
+	}
+
+	/**
+	 * Basename of a URL's path, with any query string / fragment stripped — so a
+	 * cache-buster (?ver=) can't pollute the comparison. Mirrors the URL rewriter.
+	 *
+	 * @param string $url
+	 * @return string
+	 */
+	private function url_basename( $url ) {
+		$path = wp_parse_url( (string) $url, PHP_URL_PATH );
+		return wp_basename( is_string( $path ) && '' !== $path ? $path : (string) $url );
 	}
 
 	/**
