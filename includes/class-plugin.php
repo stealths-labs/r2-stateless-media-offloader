@@ -112,7 +112,7 @@ final class Plugin {
 			: __( 'R2 Media Offload: no Custom Domain is set, so media is still served from this server. Add a Cloudflare custom domain to serve from R2.', 'r2-stateless-media-offload' );
 		printf(
 			'<div class="notice notice-%1$s"><p>%2$s</p></div>',
-			$stateless ? 'error' : 'warning',
+			esc_attr( $stateless ? 'error' : 'warning' ),
 			esc_html( $msg )
 		);
 	}
