@@ -35,7 +35,7 @@ $r2offload_field = static function ( $settings, $key, $label, $description = '',
 		<th scope="row"><label for="<?php echo esc_attr( $id ); ?>"><?php echo esc_html( $label ); ?></label></th>
 		<td>
 			<?php if ( $is_secret ) : ?>
-				<input type="password" name="secret_key" id="<?php echo esc_attr( $id ); ?>"
+				<input type="password" name="<?php echo esc_attr( $key ); ?>" id="<?php echo esc_attr( $id ); ?>"
 					class="regular-text" autocomplete="new-password"
 					placeholder="<?php echo $has_value ? esc_attr__( '•••••••• (set — leave blank to keep)', 'r2-stateless-media-offload' ) : ''; ?>"
 					<?php disabled( $locked ); ?> />

@@ -90,6 +90,7 @@ class Admin_Settings {
 				continue; // Locked by wp-config — never store.
 			}
 			$raw          = isset( $_POST[ $key ] ) ? wp_unslash( $_POST[ $key ] ) : '';
+			$raw          = is_string( $raw ) ? $raw : ''; // A crafted array submission must not warn.
 			$new[ $key ] = sanitize_text_field( $raw );
 		}
 

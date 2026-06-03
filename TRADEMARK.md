@@ -7,7 +7,7 @@ and nothing else.
 The **names, brand, and logos** associated with this project — including
 "R2 Stateless Media Offload", "stealths-labs", and any associated logos or
 wordmarks — are **trademarks of stealths-labs** and are **not** covered by the
-GPL license. The GPL grants rights to the software; it does not grant rights to
+GPL. The GPL grants rights to the software; it does not grant rights to
 the brand.
 
 ## What you may do
