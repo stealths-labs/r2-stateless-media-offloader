@@ -61,12 +61,12 @@ $r2offload_configured = $settings->is_configured();
 	</table>
 
 	<?php
-	// Authoritative resumability comes from Migration_Runner::is_resumable(),
-	// passed in by render_page(); fall back to a local derivation only if a
-	// caller didn't provide it.
-	$r2offload_resumable = isset( $r2offload_resumable )
-		? $r2offload_resumable
-		: ( empty( $state['running'] ) && empty( $state['finished_at'] ) && ( (int) ( $state['started_at'] ?? 0 ) > 0 || '' !== (string) ( $state['cursor'] ?? '' ) ) );
+	// Authoritative resumability is always supplied by render_page() via
+	// Migration_Runner::is_resumable(); default to false only if a future
+	// caller forgets to (rather than re-deriving the condition here).
+	if ( ! isset( $r2offload_resumable ) ) {
+		$r2offload_resumable = false;
+	}
 	?>
 	<p>
 		<button type="button" class="button button-primary" id="r2offload-mig-start" <?php disabled( ! $r2offload_configured || ! empty( $state['running'] ) ); ?>>

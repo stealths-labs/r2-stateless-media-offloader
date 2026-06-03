@@ -112,7 +112,7 @@ jQuery(function($){
 					if(res.data.running){ setTimeout(poll, 1500); } else { polling = false; }
 				} else { polling = false; }
 			})
-			.fail(function(){ polling = false; });
+			.fail(function(){ polling = false; $txt.text('Connection lost — reload or click a button to retry.'); });
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
 
@@ -142,6 +142,9 @@ JS;
 	public function ajax_start() {
 		$this->guard();
 		$mode = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : 'upload';
+		if ( ! in_array( $mode, array( 'upload', 'dry-run', 'verify' ), true ) ) {
+			$mode = 'upload';
+		}
 		if ( ! $this->settings->is_configured() ) {
 			wp_send_json_error( array( 'message' => __( 'Configure R2 credentials first.', 'r2-stateless-media-offload' ) ) );
 		}

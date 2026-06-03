@@ -365,7 +365,7 @@ class Migrator {
 			return;
 		}
 
-		$local     = $this->local_path_for( $attachment_id, $size, $item );
+		$local     = $this->local_path_for( $item );
 		$has_local = ( '' !== $local && is_readable( $local ) );
 
 		// Anything already in R2 is adopted, not re-uploaded — this is what lets
@@ -519,14 +519,12 @@ class Migrator {
 	}
 
 	/**
-	 * Resolve a local disk path for an attachment/size, if any exists.
+	 * Resolve a local disk path for an item (original or size), if any exists.
 	 *
-	 * @param int    $attachment_id
-	 * @param string $size       '' for the full-size original.
-	 * @param array  $item
+	 * @param array $item Item with an uploads-relative `relative` path.
 	 * @return string Absolute path, or '' when not derivable.
 	 */
-	private function local_path_for( $attachment_id, $size, array $item ) {
+	private function local_path_for( array $item ) {
 		// Resolve against the canonical uploads dir using the item's known
 		// uploads-relative path. Deliberately NOT get_attached_file(): in
 		// Stateless mode the Local_Fallback filter rewrites that to a temp

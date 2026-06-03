@@ -532,8 +532,8 @@ class Migration_Runner {
 		if ( '' === $this->lock_value ) {
 			return;
 		}
-		$parts = explode( '|', $this->lock_value );
-		$token = isset( $parts[0] ) ? $parts[0] : '';
+		$parts = explode( '|', $this->lock_value ); // Always >= 1 element.
+		$token = $parts[0];
 		if ( '' === $token ) {
 			return;
 		}

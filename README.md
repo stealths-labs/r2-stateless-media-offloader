@@ -10,7 +10,7 @@ Offload your WordPress media library to **Cloudflare R2** — zero egress fees, 
 
 ## Overview
 
-Cloudflare R2 charges **nothing for egress** — unlike Amazon S3 (~$0.09/GB) or Google Cloud Storage. For a media-heavy WordPress site, serving images directly from R2 through Cloudflare's edge means you pay only for storage (~$0.015/GB per month) and nothing to deliver.
+Cloudflare R2 charges **nothing for egress** — unlike Amazon S3 or Google Cloud Storage, which bill per GB delivered. For a media-heavy WordPress site, serving images directly from R2 through Cloudflare's edge means you pay only for storage and nothing to deliver. (See the [Cloudflare R2 pricing page](https://developers.cloudflare.com/r2/pricing/) and your other providers' current rates for exact figures.)
 
 This plugin offloads your media library to R2 and serves it from your own custom domain. Its focus is **stateless** operation: media lives only in object storage and nothing persists on the web server, which makes it well suited to containerised and ephemeral deployments (Kubernetes, App Platform, and similar).
 
