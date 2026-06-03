@@ -425,7 +425,7 @@ class Migrator {
 				$result['errors'][] = sprintf( '%s: %s', $key, $downloaded->get_error_message() );
 				return;
 			}
-			$tmp        = (string) $downloaded;
+			$tmp        = $downloaded; // Narrowed to string by the is_wp_error() guard above.
 			$local_path = $tmp;
 		}
 

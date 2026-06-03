@@ -207,6 +207,7 @@ JS;
 		$result = Plugin::instance()->client()->test_connection();
 		if ( is_wp_error( $result ) ) {
 			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
 		wp_send_json_success( array( 'message' => __( 'Connected to R2 successfully.', 'r2-stateless-media-offload' ) ) );
 	}
