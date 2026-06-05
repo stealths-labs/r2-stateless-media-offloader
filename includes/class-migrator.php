@@ -147,6 +147,7 @@ class Migrator {
 			'updated'  => 0, // Existing objects replaced (size mismatch, or forced).
 			'adopted'  => 0, // Already in R2 (correct size); registered to WP for the first time.
 			'skipped'  => 0, // Already in R2 AND already registered by a prior run — no-op.
+			'missing'  => 0, // Source file 404 everywhere (local + URL); nothing to migrate.
 			'bytes'    => 0,
 			'errors'   => array(),
 		);
@@ -196,6 +197,7 @@ class Migrator {
 			! $this->dry_run
 			&& ! $this->verify
 			&& empty( $result['errors'] )
+			&& 0 === $result['missing']
 			&& ( $result['uploaded'] + $result['updated'] + $result['adopted'] + $result['skipped'] ) > 0
 		) {
 			update_post_meta( $attachment_id, self::META_SYNCED, 1 );
@@ -302,7 +304,7 @@ class Migrator {
 			// Count outcomes at ATTACHMENT level (one per attachment, not one per
 			// size variant) so "processed" and the outcome totals stay comparable in
 			// the UI. bytes stays variant-level (real data moved). Primary outcome:
-			// uploaded > updated > adopted > skipped; errors are separate.
+			// uploaded > updated > adopted > skipped; missing-source and errors are separate.
 			if ( ! empty( $res['errors'] ) ) {
 				foreach ( $res['errors'] as $err ) {
 					$aggregate['errors'][] = sprintf( '[#%d] %s', $id, $err );
@@ -314,6 +316,8 @@ class Migrator {
 			} elseif ( (int) $res['adopted'] > 0 ) {
 				$aggregate['adopted'] += 1;
 			} else {
+				// Covers both true skips (already in R2) and missing-source (file
+				// gone everywhere) — neither has anything to do in R2.
 				$aggregate['skipped'] += 1;
 			}
 
@@ -328,6 +332,8 @@ class Migrator {
 			}
 			if ( ! empty( $res['errors'] ) ) {
 				$log_label = 'ERROR: ' . implode( '; ', $res['errors'] );
+			} elseif ( isset( $res['missing'] ) && (int) $res['missing'] > 0 ) {
+				$log_label = 'missing source (file not found anywhere — skipped)';
 			} elseif ( (int) $res['uploaded'] > 0 ) {
 				$bytes = (int) $res['bytes'];
 				$log_label = 'uploaded (' . ( $bytes >= 1048576
@@ -533,7 +539,15 @@ class Migrator {
 			}
 			$downloaded = $this->download_to_tempfile( $url );
 			if ( is_wp_error( $downloaded ) ) {
-				$result['errors'][] = sprintf( '%s: %s', $key, $downloaded->get_error_message() );
+				// A 4xx response means the source file is gone (deleted, moved, or
+				// never there) — treat as "missing source" rather than a retryable
+				// error so the attachment doesn't block migration completion on every
+				// run. META_SYNCED is not written (nothing was put in R2).
+				if ( preg_match( '/^http_4\d\d$/', (string) $downloaded->get_error_code() ) ) {
+					$result['missing'] += 1;
+				} else {
+					$result['errors'][] = sprintf( '%s: %s', $key, $downloaded->get_error_message() );
+				}
 				return;
 			}
 			$tmp        = $downloaded; // Narrowed to string by the is_wp_error() guard above.
