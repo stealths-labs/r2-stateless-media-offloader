@@ -85,7 +85,8 @@ class Admin_Migration {
 	private function inline_js() {
 		return <<<'JS'
 jQuery(function($){
-	var $bar = $('#r2offload-mig-bar'), $txt = $('#r2offload-mig-text');
+	var $bar = $('#r2offload-mig-bar'), $txtWrap = $('#r2offload-mig-text');
+	var $txt = $('#r2offload-mig-text-inner'), $spinner = $('#r2offload-mig-spinner');
 	var $migrated = $('#r2offload-mig-migrated'), $errs = $('#r2offload-mig-errors');
 	var $start = $('#r2offload-mig-start'), $pause = $('#r2offload-mig-pause'), $stop = $('#r2offload-mig-stop');
 	var $mode = $('#r2offload-mig-mode');
@@ -94,6 +95,14 @@ jQuery(function($){
 	function render(s){
 		var pct = s.total > 0 ? Math.min(100, Math.round((s.processed / s.total) * 100)) : 0;
 		$bar.css('width', pct + '%').text(pct + '%');
+		// Animated striped progress bar + spinner while running.
+		if (s.running) {
+			$bar.addClass('r2offload-running');
+			$spinner.addClass('is-active');
+		} else {
+			$bar.removeClass('r2offload-running');
+			$spinner.removeClass('is-active');
+		}
 		// "resumable" = PAUSED (can resume), authoritative from the server; a
 		// terminal Stop is cancelled and NOT resumable.
 		var resumable = ('resumable' in s) ? !!s.resumable
@@ -113,6 +122,7 @@ jQuery(function($){
 			'  ·  skipped ' + s.skipped +
 			'  ·  errors ' + s.errors
 		);
+		$txtWrap.attr('aria-live', s.running ? 'off' : 'polite'); // Suppress aria-live chatter during rapid updates.
 
 		// Migrated vs remaining (library-wide truth from the server count).
 		if ( $migrated.length ) {
@@ -161,7 +171,7 @@ jQuery(function($){
 					if(res.data.running){ setTimeout(poll, 1500); } else { polling = false; }
 				} else { polling = false; }
 			})
-			.fail(function(){ polling = false; $txt.text('Connection lost — reload or click a button to retry.'); });
+			.fail(function(){ polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txt.text('Connection lost — reload or click a button to retry.'); });
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
 	function showError(res, fallback){ $txt.text((res && res.data && res.data.message) ? res.data.message : fallback); }
@@ -169,7 +179,7 @@ jQuery(function($){
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
 	});
 	// One button toggles Pause (while running) and Resume (while paused).
 	$pause.on('click', function(){
@@ -180,12 +190,12 @@ jQuery(function($){
 				if(res && res.success){ render(res.data); if(res.data.running){ startPolling(); } }
 				else { showError(res, resume ? 'Could not resume the migration.' : 'Could not pause the migration.'); }
 			})
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
 	});
 	$stop.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_cancel', nonce:R2OFFLOAD_MIG.nonce })
 			.done(function(res){ if(res && res.success){ render(res.data); } else { showError(res, 'Could not stop the migration.'); } })
-			.fail(function(){ $txt.text('Connection lost — reload or try again.'); });
+			.fail(function(){ $txt.text('Connection lost — reload or try again.'); $spinner.removeClass('is-active'); });
 	});
 
 	// Initial state + resume polling if a migration is already running.

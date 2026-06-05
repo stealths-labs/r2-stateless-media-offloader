@@ -108,12 +108,27 @@ $r2offload_has_run = $r2offload_running || $r2offload_resumable;
 		</button>
 	</p>
 
+	<style>
+		@keyframes r2offload-stripe {
+			from { background-position: 40px 0; }
+			to   { background-position: 0 0; }
+		}
+		#r2offload-mig-bar.r2offload-running {
+			background-image: repeating-linear-gradient(
+				45deg,
+				transparent, transparent 10px,
+				rgba(255,255,255,.18) 10px, rgba(255,255,255,.18) 20px
+			);
+			animation: r2offload-stripe .7s linear infinite;
+		}
+	</style>
 	<div style="max-width:46em;">
 		<div style="background:#e2e4e7;border-radius:3px;overflow:hidden;height:24px;">
 			<div id="r2offload-mig-bar" style="background:#2271b1;color:#fff;height:24px;line-height:24px;text-align:center;width:0;white-space:nowrap;transition:width .3s;">0%</div>
 		</div>
-		<p id="r2offload-mig-text" aria-live="polite" style="margin-top:.5em;">
-			<?php esc_html_e( 'Idle', 'r2-stateless-media-offload' ); ?>
+		<p id="r2offload-mig-text" aria-live="polite" style="margin-top:.5em;display:flex;align-items:center;gap:4px;">
+			<span class="spinner" id="r2offload-mig-spinner" style="float:none;margin:0;"></span>
+			<span id="r2offload-mig-text-inner"><?php esc_html_e( 'Idle', 'r2-stateless-media-offload' ); ?></span>
 		</p>
 		<p id="r2offload-mig-migrated" aria-live="polite" style="margin:.25em 0 0;font-weight:600;display:none;"></p>
 		<div id="r2offload-mig-errors" class="notice notice-error inline" style="display:none;margin:.75em 0 0;padding:.5em .75em;"></div>

@@ -665,6 +665,12 @@ class Migrator {
 			$url = ( false === $pos ) ? $base : substr( $base, 0, $pos + 1 ) . $item['filename'];
 		}
 
+		// Percent-encode raw non-ASCII bytes in the URL path (e.g. CJK filenames).
+		// wp_get_attachment_url() concatenates the upload base URL with the raw
+		// _wp_attached_file value, which may contain UTF-8 characters. Servers
+		// expect percent-encoded paths and return 404 for the raw form.
+		$url = $this->encode_url_path( $url );
+
 		// SSRF guard for REMOTE sources: wp_http_validate_url() rejects
 		// loopback / private / reserved-IP targets, so a crafted attachment URL
 		// (or a compromised upstream URL filter) can't make the server fetch an
@@ -689,7 +695,59 @@ class Migrator {
 	 */
 	private function url_basename( $url ) {
 		$path = wp_parse_url( (string) $url, PHP_URL_PATH );
-		return wp_basename( is_string( $path ) && '' !== $path ? $path : (string) $url );
+		$base = wp_basename( is_string( $path ) && '' !== $path ? $path : (string) $url );
+		// Decode percent-encoded characters so a URL with %E8%BF%BD matches the
+		// raw UTF-8 filename stored in attachment metadata (and vice-versa).
+		return rawurldecode( $base );
+	}
+
+	/**
+	 * Percent-encode raw non-ASCII bytes in a URL's path component.
+	 *
+	 * wp_get_attachment_url() builds URLs by concatenating the upload base URL
+	 * with the raw _wp_attached_file value from the database, which may contain
+	 * UTF-8 characters (e.g. CJK filenames). Web servers expect percent-encoded
+	 * paths and return 404 for raw non-ASCII. Already-encoded sequences (%xx) are
+	 * left intact because '%' is ASCII and the regex won't match it.
+	 *
+	 * @param string $url
+	 * @return string
+	 */
+	private function encode_url_path( $url ) {
+		$parts = wp_parse_url( $url );
+		if ( ! is_array( $parts ) || empty( $parts['path'] ) ) {
+			return $url;
+		}
+		$encoded_path = preg_replace_callback(
+			'/[^\x00-\x7F]+/',
+			function ( $m ) { return rawurlencode( $m[0] ); },
+			$parts['path']
+		);
+		$result = '';
+		if ( ! empty( $parts['scheme'] ) ) {
+			$result .= $parts['scheme'] . '://';
+		}
+		if ( ! empty( $parts['user'] ) ) {
+			$result .= $parts['user'];
+			if ( ! empty( $parts['pass'] ) ) {
+				$result .= ':' . $parts['pass'];
+			}
+			$result .= '@';
+		}
+		if ( ! empty( $parts['host'] ) ) {
+			$result .= $parts['host'];
+		}
+		if ( ! empty( $parts['port'] ) ) {
+			$result .= ':' . $parts['port'];
+		}
+		$result .= $encoded_path;
+		if ( ! empty( $parts['query'] ) ) {
+			$result .= '?' . $parts['query'];
+		}
+		if ( ! empty( $parts['fragment'] ) ) {
+			$result .= '#' . $parts['fragment'];
+		}
+		return $result;
 	}
 
 	/**
