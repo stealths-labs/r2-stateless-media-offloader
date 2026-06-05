@@ -133,6 +133,8 @@ class Migration_Runner {
 			'cursor'      => '',
 			'processed'   => 0,
 			'uploaded'    => 0,
+			'updated'     => 0,
+			'adopted'     => 0,
 			'skipped'     => 0,
 			'errors'      => 0,
 			'bytes'       => 0,
@@ -175,7 +177,7 @@ class Migration_Runner {
 	 * @return array New state.
 	 */
 	public function start( $mode = 'upload' ) {
-		$mode  = in_array( $mode, array( 'upload', 'dry-run', 'verify' ), true ) ? $mode : 'upload';
+		$mode  = in_array( $mode, array( 'upload', 'force', 'dry-run', 'verify' ), true ) ? $mode : 'upload';
 		$state = self::default_state();
 		$state['running']    = true;
 		$state['mode']       = $mode;
@@ -414,25 +416,35 @@ class Migration_Runner {
 				$migrator = new Migrator( null, $this->settings );
 				$migrator->set_dry_run( 'dry-run' === $state['mode'] )
 					->set_verify( 'verify' === $state['mode'] )
+					->set_force( 'force' === $state['mode'] )
 					->set_heartbeat( array( $this, 'refresh_lock' ) );
 
 				$result = $migrator->migrate_batch( self::BATCH, (string) $state['cursor'], (int) $max_seconds );
 
 				$state['processed'] += (int) $result['processed'];
 				$state['uploaded']  += (int) $result['uploaded'];
+				$state['updated']   += (int) $result['updated'];
+				$state['adopted']   += (int) $result['adopted'];
 				$state['skipped']   += (int) $result['skipped'];
 				$state['errors']    += count( $result['errors'] );
 				$state['pass_errors'] += count( $result['errors'] );
 				$state['bytes']     += (int) $result['bytes'];
 				$state['cursor']     = (string) $result['next_cursor'];
 				// Circuit breaker: a batch that THREW bumps the streak in catch
-				// below. Also bump it when an UPLOAD batch processed items but none
-				// uploaded or skipped — i.e. every item failed (e.g. wrong
+				// below. Also bump it when an UPLOAD batch processed items but NONE
+				// had any successful outcome — i.e. every item failed (e.g. wrong
 				// credentials → every PUT 403). Otherwise a uniformly-failing run
 				// would grind through all MAX_PASSES passes of the whole library
-				// before stopping. A single success (upload or adoption skip) clears
-				// it. Dry-run/verify count progress differently, so only gate upload.
-				$batch_made_progress = ( (int) $result['uploaded'] > 0 || (int) $result['skipped'] > 0 );
+				// before stopping. ANY successful outcome clears it — including
+				// adoption (uploaded=skipped=0 but adopted>0, the Super Slurper
+				// path) and updates, or the breaker would trip on a fully-adopted
+				// library. Dry-run/verify count progress differently, so only gate upload.
+				$batch_made_progress = (
+					(int) $result['uploaded'] > 0
+					|| (int) $result['updated'] > 0
+					|| (int) $result['adopted'] > 0
+					|| (int) $result['skipped'] > 0
+				);
 				if ( 'upload' === $state['mode'] && (int) $result['processed'] > 0 && ! $batch_made_progress ) {
 					++$state['fail_streak'];
 				} else {
@@ -469,8 +481,10 @@ class Migration_Runner {
 				// Re-counting for the new pass so the admin UI reflects the FINAL
 				// pass (library state) rather than the sum across passes — items
 				// that succeed on retry should drop out of these counts. Matches
-				// the WP-CLI summary. uploaded/bytes stay cumulative (real work).
+				// the WP-CLI summary. uploaded/updated/bytes stay cumulative (real
+				// bytes moved); processed/adopted/skipped describe library state.
 				$state['processed']     = 0;
+				$state['adopted']       = 0;
 				$state['skipped']       = 0;
 				$state['errors']        = 0;
 				$state['recent_errors'] = array(); // Show only the final pass's errors.

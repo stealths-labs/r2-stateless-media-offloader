@@ -109,6 +109,9 @@ class CLI {
 	 * [--verify]
 	 * : HEAD-check expected keys in R2 and report any that are missing.
 	 *
+	 * [--force]
+	 * : Re-upload (replace) objects already in R2 instead of adopting them.
+	 *
 	 * [--timeout=<seconds>]
 	 * : Per-file download timeout for remote fetches (default: 300).
 	 *
@@ -117,7 +120,8 @@ class CLI {
 	 *     wp r2offload sync --dry-run
 	 *     wp r2offload sync --batch=250
 	 *     wp r2offload sync --verify
-	 *     wp r2offload sync --timeout=900   # libraries with large video
+	 *     wp r2offload sync --force          # replace everything already in R2
+	 *     wp r2offload sync --timeout=900    # libraries with large video
 	 *
 	 * @when after_wp_load
 	 */
@@ -125,6 +129,9 @@ class CLI {
 		$settings = Plugin::instance()->settings();
 		$dry_run  = ! empty( $assoc_args['dry-run'] );
 		$verify   = ! empty( $assoc_args['verify'] );
+		// Force re-upload: replace objects already in R2 instead of adopting them.
+		// Ignored alongside dry-run/verify (those never upload).
+		$force    = ! empty( $assoc_args['force'] ) && ! $dry_run && ! $verify;
 
 		// Verify and upload require R2 credentials. Dry-run doesn't require them
 		// and never uploads — but it still issues a HEAD per item to report
@@ -156,17 +163,19 @@ class CLI {
 		$migrator = new Migrator();
 		$migrator->set_dry_run( $dry_run )
 			->set_verify( $verify )
+			->set_force( $force )
 			->set_download_timeout( $timeout );
 
-		$mode = $verify ? 'verify' : ( $dry_run ? 'dry-run' : 'upload' );
+		$mode = $verify ? 'verify' : ( $dry_run ? 'dry-run' : ( $force ? 'force' : 'upload' ) );
 		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d   Download timeout: %ds', $mode, $batch, $timeout ) );
 		\WP_CLI::log( '' );
 
 		// Upload mode retries failed items across passes (the cursor advances
 		// past errors, so a single forward walk can leave them un-migrated),
 		// matching the background runner. Verify/dry-run don't upload, so a
-		// retry pass would just re-report the same items — single pass only.
-		$totals = $this->run_passes( $migrator, $batch, ( ! $verify && ! $dry_run ) );
+		// retry pass would just re-report the same items. Force re-uploads every
+		// item, so a retry pass would re-send everything again — single pass too.
+		$totals = $this->run_passes( $migrator, $batch, ( ! $verify && ! $dry_run && ! $force ) );
 
 		$this->print_summary( $mode, $verify, $totals );
 
@@ -248,6 +257,8 @@ class CLI {
 		$totals      = array(
 			'processed' => 0,
 			'uploaded'  => 0,
+			'updated'   => 0,
+			'adopted'   => 0,
 			'skipped'   => 0,
 			'bytes'     => 0,
 			'errors'    => 0,
@@ -260,6 +271,8 @@ class CLI {
 
 			$totals['processed'] += (int) $result['processed'];
 			$totals['uploaded']  += (int) $result['uploaded'];
+			$totals['updated']   += (int) $result['updated'];
+			$totals['adopted']   += (int) $result['adopted'];
 			$totals['skipped']   += (int) $result['skipped'];
 			$totals['bytes']     += (int) $result['bytes'];
 			$totals['errors']    += count( $result['errors'] );
@@ -271,9 +284,11 @@ class CLI {
 
 			\WP_CLI::log(
 				sprintf(
-					'  batch -> processed=%d uploaded=%d skipped=%d bytes=%s next_cursor=%s',
+					'  batch -> processed=%d uploaded=%d updated=%d adopted=%d skipped=%d bytes=%s next_cursor=%s',
 					$result['processed'],
 					$result['uploaded'],
+					$result['updated'],
+					$result['adopted'],
 					$result['skipped'],
 					size_format( (int) $result['bytes'], 2 ),
 					'' === $result['next_cursor'] ? '-' : $result['next_cursor']
@@ -291,9 +306,10 @@ class CLI {
 				$done        = false;
 				// A new pass re-walks the whole library. Reset the counts that
 				// describe library state so the summary reflects the FINAL pass,
-				// not the sum of every pass; uploaded/bytes stay cumulative as
-				// they measure real work done across the run.
+				// not the sum of every pass; uploaded/updated/bytes stay cumulative
+				// as they measure real bytes moved across the run.
 				$totals['processed'] = 0;
+				$totals['adopted']   = 0;
 				$totals['skipped']   = 0;
 				$totals['errors']    = 0;
 			}
@@ -333,8 +349,10 @@ class CLI {
 			\WP_CLI::log( 'Found:      ' . $totals['skipped'] . ' item(s)' );
 			\WP_CLI::log( 'Missing:    ' . $totals['errors'] . ' item(s)' );
 		} else {
-			\WP_CLI::log( 'Uploaded:   ' . $totals['uploaded'] . ' item(s)' );
-			\WP_CLI::log( 'Skipped:    ' . $totals['skipped'] . ' item(s)' );
+			\WP_CLI::log( 'Uploaded:   ' . $totals['uploaded'] . ' item(s)  (new)' );
+			\WP_CLI::log( 'Updated:    ' . $totals['updated'] . ' item(s)  (replaced in R2)' );
+			\WP_CLI::log( 'Adopted:    ' . $totals['adopted'] . ' item(s)  (already in R2, newly registered)' );
+			\WP_CLI::log( 'Skipped:    ' . $totals['skipped'] . ' item(s)  (already registered)' );
 			\WP_CLI::log( 'Total size: ' . size_format( $totals['bytes'], 2 ) );
 			\WP_CLI::log( 'Errors:     ' . $totals['errors'] );
 		}

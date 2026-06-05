@@ -107,7 +107,11 @@ jQuery(function($){
 		$txt.text(
 			statusWord + passLabel +
 			' — ' + s.processed + ' / ' + s.total + ' processed' +
-			'  ·  uploaded ' + s.uploaded + '  ·  skipped ' + s.skipped + '  ·  errors ' + s.errors
+			'  ·  uploaded ' + s.uploaded +
+			'  ·  updated ' + (s.updated || 0) +
+			'  ·  adopted ' + (s.adopted || 0) +
+			'  ·  skipped ' + s.skipped +
+			'  ·  errors ' + s.errors
 		);
 
 		// Migrated vs remaining (library-wide truth from the server count).
@@ -197,7 +201,7 @@ JS;
 	public function ajax_start() {
 		$this->guard();
 		$mode = isset( $_POST['mode'] ) ? sanitize_key( wp_unslash( $_POST['mode'] ) ) : 'upload';
-		if ( ! in_array( $mode, array( 'upload', 'dry-run', 'verify' ), true ) ) {
+		if ( ! in_array( $mode, array( 'upload', 'force', 'dry-run', 'verify' ), true ) ) {
 			$mode = 'upload';
 		}
 		// Don't reset an already-running migration. The Start button is disabled

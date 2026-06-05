@@ -72,6 +72,7 @@ $r2offload_has_run = $r2offload_running || $r2offload_resumable;
 				<?php $r2offload_mode = isset( $state['mode'] ) ? (string) $state['mode'] : 'upload'; ?>
 				<select id="r2offload-mig-mode" <?php disabled( $r2offload_has_run ); ?>>
 					<option value="upload" <?php selected( $r2offload_mode, 'upload' ); ?>><?php esc_html_e( 'Migrate (upload to R2)', 'r2-stateless-media-offload' ); ?></option>
+					<option value="force" <?php selected( $r2offload_mode, 'force' ); ?>><?php esc_html_e( 'Force re-upload (replace existing in R2)', 'r2-stateless-media-offload' ); ?></option>
 					<option value="dry-run" <?php selected( $r2offload_mode, 'dry-run' ); ?>><?php esc_html_e( 'Dry run (count + size, no upload)', 'r2-stateless-media-offload' ); ?></option>
 					<option value="verify" <?php selected( $r2offload_mode, 'verify' ); ?>><?php esc_html_e( 'Verify (check objects exist in R2)', 'r2-stateless-media-offload' ); ?></option>
 				</select>
@@ -116,5 +117,29 @@ $r2offload_has_run = $r2offload_running || $r2offload_resumable;
 		</p>
 		<p id="r2offload-mig-migrated" aria-live="polite" style="margin:.25em 0 0;font-weight:600;display:none;"></p>
 		<div id="r2offload-mig-errors" class="notice notice-error inline" style="display:none;margin:.75em 0 0;padding:.5em .75em;"></div>
+
+		<details style="margin-top:1em;">
+			<summary style="cursor:pointer;"><?php esc_html_e( 'What do these counts mean?', 'r2-stateless-media-offload' ); ?></summary>
+			<table class="widefat striped" style="max-width:46em;margin-top:.5em;">
+				<tbody>
+					<tr>
+						<td style="width:8em;"><strong><?php esc_html_e( 'Uploaded', 'r2-stateless-media-offload' ); ?></strong></td>
+						<td><?php esc_html_e( 'The file was not in R2 — it was newly copied up.', 'r2-stateless-media-offload' ); ?></td>
+					</tr>
+					<tr>
+						<td><strong><?php esc_html_e( 'Updated', 'r2-stateless-media-offload' ); ?></strong></td>
+						<td><?php esc_html_e( 'The file was already in R2 but the wrong size (or you chose Force re-upload), so it was replaced.', 'r2-stateless-media-offload' ); ?></td>
+					</tr>
+					<tr>
+						<td><strong><?php esc_html_e( 'Adopted', 'r2-stateless-media-offload' ); ?></strong></td>
+						<td><?php esc_html_e( 'The correct file was already in R2 (e.g. copied by Cloudflare Super Slurper). No bytes were moved — WordPress was just registered to serve it from R2.', 'r2-stateless-media-offload' ); ?></td>
+					</tr>
+					<tr>
+						<td><strong><?php esc_html_e( 'Skipped', 'r2-stateless-media-offload' ); ?></strong></td>
+						<td><?php esc_html_e( 'Already in R2 and already registered by a previous run — nothing to do.', 'r2-stateless-media-offload' ); ?></td>
+					</tr>
+				</tbody>
+			</table>
+		</details>
 	</div>
 </div>

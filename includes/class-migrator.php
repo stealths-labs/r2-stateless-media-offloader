@@ -45,6 +45,9 @@ class Migrator {
 	/** @var bool */
 	private $verify = false;
 
+	/** @var bool Force re-upload: replace objects already in R2 instead of adopting them. */
+	private $force = false;
+
 	/**
 	 * Per-file download timeout in seconds. Matches WordPress's own
 	 * `download_url()` default so large videos / PDFs aren't truncated.
@@ -94,6 +97,18 @@ class Migrator {
 	}
 
 	/**
+	 * Toggle force mode: re-upload (replace) objects already in R2 instead of
+	 * adopting them. Used to repair a bucket suspected to hold stale/wrong objects.
+	 *
+	 * @param bool $on
+	 * @return self
+	 */
+	public function set_force( $on ) {
+		$this->force = (bool) $on;
+		return $this;
+	}
+
+	/**
 	 * Override the per-file download timeout (seconds). Useful for libraries
 	 * that contain large media (video / hi-res PDFs).
 	 *
@@ -128,11 +143,18 @@ class Migrator {
 	 */
 	public function migrate_attachment( $attachment_id ) {
 		$result = array(
-			'uploaded' => 0,
-			'skipped'  => 0,
+			'uploaded' => 0, // New objects (were not in R2).
+			'updated'  => 0, // Existing objects replaced (size mismatch, or forced).
+			'adopted'  => 0, // Already in R2 (correct size); registered to WP for the first time.
+			'skipped'  => 0, // Already in R2 AND already registered by a prior run — no-op.
 			'bytes'    => 0,
 			'errors'   => array(),
 		);
+
+		// Whether this attachment was already registered before this run decides
+		// whether an already-present variant counts as Adopted (first registration)
+		// or Skipped (re-run no-op). Captured once, before any per-variant work.
+		$was_synced = (bool) get_post_meta( (int) $attachment_id, self::META_SYNCED, true );
 
 		$attachment_id = (int) $attachment_id;
 		if ( $attachment_id <= 0 ) {
@@ -160,7 +182,7 @@ class Migrator {
 			if ( null !== $this->heartbeat ) {
 				call_user_func( $this->heartbeat );
 			}
-			$this->migrate_item( $attachment_id, $item, $result );
+			$this->migrate_item( $attachment_id, $item, $result, $was_synced );
 		}
 
 		// Mark the attachment offloaded only when EVERY variant is in R2 — each
@@ -174,7 +196,7 @@ class Migrator {
 			! $this->dry_run
 			&& ! $this->verify
 			&& empty( $result['errors'] )
-			&& ( $result['uploaded'] + $result['skipped'] ) > 0
+			&& ( $result['uploaded'] + $result['updated'] + $result['adopted'] + $result['skipped'] ) > 0
 		) {
 			update_post_meta( $attachment_id, self::META_SYNCED, 1 );
 			// Store the original's actual R2 key (SWR-313) so readers resolve it
@@ -244,6 +266,8 @@ class Migrator {
 		$aggregate = array(
 			'processed'   => 0,
 			'uploaded'    => 0,
+			'updated'     => 0,
+			'adopted'     => 0,
 			'skipped'     => 0,
 			'bytes'       => 0,
 			'errors'      => array(),
@@ -272,6 +296,8 @@ class Migrator {
 
 			$aggregate['processed']  += 1;
 			$aggregate['uploaded']   += (int) $res['uploaded'];
+			$aggregate['updated']    += (int) $res['updated'];
+			$aggregate['adopted']    += (int) $res['adopted'];
 			$aggregate['skipped']    += (int) $res['skipped'];
 			$aggregate['bytes']      += (int) $res['bytes'];
 			$aggregate['next_cursor'] = (string) $id;
@@ -391,7 +417,7 @@ class Migrator {
 	 * @param array $result Mutated in place.
 	 * @return void
 	 */
-	private function migrate_item( $attachment_id, array $item, array &$result ) {
+	private function migrate_item( $attachment_id, array $item, array &$result, $was_synced = false ) {
 		$key  = $item['key'];
 		$size = $item['size'];
 
@@ -411,25 +437,23 @@ class Migrator {
 		$local     = $this->local_path_for( $item );
 		$has_local = ( '' !== $local && is_readable( $local ) );
 
-		// Anything already in R2 is adopted, not re-uploaded — this is what lets
-		// the migrator register media copied into R2 by an external tool (e.g.
-		// Cloudflare Super Slurper) without moving bytes. Dry-run checks this too
-		// so its preview counts/sizes reflect what an upload would actually skip
-		// rather than overstating the remaining work.
-		//
-		// Confirm an existing R2 object is the SAME size before trusting it — a
-		// mismatch (wrong/partial object at the computed key) must re-upload rather
-		// than be silently adopted, since adoption marks the attachment synced and
-		// authorises deleting the local copy in Stateless mode.
+		// HEAD R2 to classify the variant:
+		//   - present + correct size → ADOPTED (first registration) or SKIPPED
+		//     (a prior run already registered this attachment); no bytes moved.
+		//     This is what lets us register media copied into R2 by an external
+		//     tool (e.g. Cloudflare Super Slurper) without re-uploading.
+		//   - present + wrong/unconfirmable size, OR Force → UPDATED (re-upload).
+		//   - absent → UPLOADED (new).
+		// The size check guards against trusting a truncated/wrong object: adoption
+		// marks the attachment synced and authorises deleting the local copy in
+		// Stateless mode, so a bad object must re-upload, not be adopted.
 		//   - With a local copy: compare against filesize(local).
-		//   - Without a local copy (the migrate-from-GCS/S3 case): compare against
-		//     the size WordPress recorded in metadata, when it has one — this
-		//     catches a truncated/wrong externally-copied object for free, without
-		//     a HEAD against the source backend (which would reintroduce the egress
-		//     the migration is eliminating). When neither side's size is known we
-		//     keep adopting on existence (operators can run verify mode).
-		$head = $this->client->head_object( $key );
-		if ( null !== $head ) {
+		//   - Without a local copy (migrate-from-GCS/S3): compare against the size
+		//     WordPress recorded in metadata when known — catches a truncated
+		//     external copy without a HEAD against the source. Unknown → trust.
+		$head    = $this->client->head_object( $key );
+		$existed = ( null !== $head );
+		if ( $existed && ! $this->force ) {
 			if ( $has_local ) {
 				// If the HEAD omitted Content-Length we can't confirm — re-upload.
 				$size_ok = ( null !== $head['size'] && (int) filesize( $local ) === (int) $head['size'] );
@@ -439,18 +463,19 @@ class Migrator {
 				$size_ok = true; // No comparable sizes — trust existence.
 			}
 			if ( $size_ok ) {
-				$result['skipped'] += 1;
+				// Already in R2 and correct: adopt (register for the first time) or
+				// skip (a prior run already registered this attachment).
+				$result[ $was_synced ? 'skipped' : 'adopted' ] += 1;
 				return;
 			}
-			// else: size unverifiable/mismatched against the local source — fall
-			// through and re-upload.
+			// else: size unverifiable/mismatched — fall through and re-upload (Updated).
 		}
 
 		if ( $this->dry_run ) {
 			$bytes = $this->measure_source( $attachment_id, $size, $item, $local, $has_local, $result, $key );
 			if ( null !== $bytes ) {
-				$result['uploaded'] += 1;
-				$result['bytes']    += $bytes;
+				$result[ $existed ? 'updated' : 'uploaded' ] += 1;
+				$result['bytes']                             += $bytes;
 			}
 			return;
 		}
@@ -504,8 +529,8 @@ class Migrator {
 			return;
 		}
 
-		$result['uploaded'] += 1;
-		$result['bytes']    += $size_bytes;
+		$result[ $existed ? 'updated' : 'uploaded' ] += 1;
+		$result['bytes']                             += $size_bytes;
 	}
 
 	/**

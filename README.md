@@ -88,7 +88,12 @@ wp r2offload sync --batch=250
 
 # Confirm every expected object exists in R2.
 wp r2offload sync --verify
+
+# Re-upload (replace) everything already in R2 — repairs a stale/wrong bucket.
+wp r2offload sync --force
 ```
+
+Each file is reported as **Uploaded** (new), **Updated** (replaced), **Adopted** (already in R2, registered for the first time — e.g. a Super Slurper copy), or **Skipped** (already registered by a prior run). See [docs/MIGRATION.md](docs/MIGRATION.md) for the full per-file decision flow.
 
 Migrations are resumable and batched, so large libraries can be processed without timeouts.
 
@@ -99,6 +104,12 @@ If your media is already in R2 — for example, copied straight from Google Clou
 ## How it works
 
 The plugin records each attachment's R2 object key in post metadata and rewrites media URLs at render time. The WordPress database and post content are never altered. Because the path prefix is captured per attachment at upload time, changing it later affects only new uploads — existing media continues to resolve correctly.
+
+## Documentation
+
+- **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** — every setting and `wp-config` constant, the custom-domain requirement, the path-prefix gotcha, and CDN vs Stateless modes.
+- **[docs/MIGRATION.md](docs/MIGRATION.md)** — how the migrator decides per file (Uploaded / Updated / Adopted / Skipped), the real-world states, Pause/Resume/Stop, large-library/WP-CLI tips, and a cutover runbook from another offloader.
+- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the components, the per-attachment metadata, and the request lifecycle.
 
 ## Development
 
