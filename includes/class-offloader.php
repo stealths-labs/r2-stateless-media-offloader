@@ -378,6 +378,11 @@ class Offloader {
 		}
 
 		$uploads = wp_get_upload_dir();
+		// Bail if the uploads dir is unavailable, mirroring Migrator::local_path_for()
+		// — without a valid basedir the local paths (and thus the upload) are wrong.
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+			return array();
+		}
 		$basedir = trailingslashit( $uploads['basedir'] );
 
 		// Anchor keys on the attachment's base key: its stored _r2offload_key

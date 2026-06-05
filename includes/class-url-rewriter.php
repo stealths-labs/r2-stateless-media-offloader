@@ -280,9 +280,10 @@ class URL_Rewriter {
 			}
 			// "URL [descriptor]" — split on the first whitespace run.
 			$parts = preg_split( '/\s+/', $candidate, 2 );
-			if ( ! is_array( $parts ) || ! isset( $parts[0] ) ) {
-				// preg_split only returns false on a PCRE error (not possible for
-				// the static /\s+/), but guard defensively: leave the candidate as-is.
+			if ( ! is_array( $parts ) ) {
+				// preg_split only returns false on a PCRE error (not possible for the
+				// static /\s+/, and $candidate is non-empty here), but guard
+				// defensively: leave the candidate as-is.
 				$out[] = $candidate;
 				continue;
 			}

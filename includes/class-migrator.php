@@ -726,6 +726,11 @@ class Migrator {
 			return $tmp;
 		}
 		if ( ! is_string( $tmp ) || ! is_readable( $tmp ) ) {
+			// Defensive: download_url() normally returns a readable path or WP_Error,
+			// but if it ever hands back an unreadable path, delete it so it doesn't leak.
+			if ( is_string( $tmp ) && file_exists( $tmp ) ) {
+				wp_delete_file( $tmp );
+			}
 			return new \WP_Error(
 				'r2offload_download_failed',
 				__( 'Downloaded tempfile is not readable.', 'r2-stateless-media-offload' )
