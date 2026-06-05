@@ -169,14 +169,14 @@ jQuery(function($){
 				if(res && res.success){
 					render(res.data);
 					if(res.data.running){ setTimeout(poll, 1500); } else { polling = false; }
-				} else { polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txt.text('Polling error — reload or click a button to retry.'); }
+				} else { polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txtWrap.attr('aria-live', 'polite'); $txt.text('Polling error — reload or click a button to retry.'); }
 			})
 			.fail(function(){ polling = false; $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txt.text('Connection lost — reload or click a button to retry.'); });
 	}
 	function startPolling(){ if(!polling){ polling = true; poll(); } }
-	function showError(res, fallback){ $txt.text((res && res.data && res.data.message) ? res.data.message : fallback); }
+	function showError(res, fallback){ $txtWrap.attr('aria-live', 'polite'); $txt.text((res && res.data && res.data.message) ? res.data.message : fallback); }
 
-	function clearRunningUI(){ $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); }
+	function clearRunningUI(){ $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txtWrap.attr('aria-live', 'polite'); }
 	$start.on('click', function(){
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
