@@ -70,5 +70,10 @@ if ( is_multisite() ) {
 		error_log( 'r2offload uninstall: approached max_execution_time; some network sites still hold plugin options/meta — clean up via WP-CLI if needed.' ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
 	}
 } else {
-	r2offload_uninstall_cleanup_site();
+	try {
+		r2offload_uninstall_cleanup_site();
+	} catch ( \Throwable $e ) {
+		// Best-effort: log but don't abort the uninstall.
+		error_log( 'r2offload uninstall: cleanup failed: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+	}
 }
