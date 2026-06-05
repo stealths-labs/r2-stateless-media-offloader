@@ -90,7 +90,21 @@ jQuery(function($){
 	var $migrated = $('#r2offload-mig-migrated'), $errs = $('#r2offload-mig-errors');
 	var $start = $('#r2offload-mig-start'), $pause = $('#r2offload-mig-pause'), $stop = $('#r2offload-mig-stop');
 	var $mode = $('#r2offload-mig-mode');
+	var $log = $('#r2offload-mig-log');
+	var $logDetails = $('#r2offload-mig-log-details');
 	var polling = false;
+	var lastLogCount = 0; // Track how many entries the log panel already shows.
+
+	function renderLog(entries) {
+		if ( !$log.length || !entries || !entries.length ) { return; }
+		// Only re-render if the server sent more lines than we last showed.
+		if ( entries.length <= lastLogCount ) { return; }
+		lastLogCount = entries.length;
+		// Plain-text only — never inject as HTML.
+		$log.text( entries.join('\n') );
+		// Auto-scroll to the newest entry.
+		$log.scrollTop( $log[0].scrollHeight );
+	}
 
 	function render(s){
 		var pct = s.total > 0 ? Math.min(100, Math.round((s.processed / s.total) * 100)) : 0;
@@ -150,6 +164,15 @@ jQuery(function($){
 			}
 		}
 
+		// Activity log panel — open automatically the first time entries arrive,
+		// stay open thereafter.
+		if ( s.log_entries && s.log_entries.length ) {
+			if ( $logDetails.length && !$logDetails.prop('open') ) {
+				$logDetails.prop('open', true);
+			}
+			renderLog( s.log_entries );
+		}
+
 		if (s.mode) { $mode.val(s.mode); }
 		// Buttons: Start only when idle/done; Pause/Stop only when a run is
 		// active or paused; the Pause button doubles as Resume when paused.
@@ -178,6 +201,7 @@ jQuery(function($){
 
 	function clearRunningUI(){ $spinner.removeClass('is-active'); $bar.removeClass('r2offload-running'); $txtWrap.attr('aria-live', 'polite'); }
 	$start.on('click', function(){
+		lastLogCount = 0; // Fresh run — let the log panel repopulate from scratch.
 		$.post(ajaxurl, { action:'r2offload_migrate_start', nonce:R2OFFLOAD_MIG.nonce, mode:$mode.val() })
 			.done(function(res){ if(res && res.success){ render(res.data); startPolling(); } else { showError(res, 'Could not start the migration.'); } })
 			.fail(function(){ clearRunningUI(); $txt.text('Connection lost — reload or try again.'); });

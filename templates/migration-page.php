@@ -133,6 +133,14 @@ $r2offload_has_run = $r2offload_running || $r2offload_resumable;
 		<p id="r2offload-mig-migrated" aria-live="polite" style="margin:.25em 0 0;font-weight:600;display:none;"></p>
 		<div id="r2offload-mig-errors" class="notice notice-error inline" style="display:none;margin:.75em 0 0;padding:.5em .75em;"></div>
 
+		<details id="r2offload-mig-log-details" style="margin-top:1em;">
+			<summary style="cursor:pointer;"><?php esc_html_e( 'Activity log', 'r2-stateless-media-offload' ); ?></summary>
+			<div id="r2offload-mig-log"
+				style="margin-top:.5em;height:220px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.7;background:#1d2021;color:#ebdbb2;border-radius:3px;padding:8px 12px;white-space:pre;"
+				aria-label="<?php esc_attr_e( 'Migration activity log', 'r2-stateless-media-offload' ); ?>"
+			></div>
+		</details>
+
 		<details style="margin-top:1em;">
 			<summary style="cursor:pointer;"><?php esc_html_e( 'What do these counts mean?', 'r2-stateless-media-offload' ); ?></summary>
 			<table class="widefat striped" style="max-width:46em;margin-top:.5em;">

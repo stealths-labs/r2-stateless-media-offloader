@@ -141,9 +141,11 @@ class Migration_Runner {
 			'total'       => 0,
 			'started_at'  => 0,
 			'finished_at' => 0,
-			'cancelled'   => false,    // Terminally stopped (not resumable) vs paused.
-			'last_error'  => '',
+			'cancelled'     => false,    // Terminally stopped (not resumable) vs paused.
+			'last_error'    => '',
 			'recent_errors' => array(), // Last few per-item error messages for the UI.
+			'log_entries'   => array(), // Ring buffer of recent per-item activity lines.
+			'last_batch_at' => 0,       // Unix timestamp of the most recent completed batch.
 		);
 	}
 
@@ -470,6 +472,17 @@ class Migration_Runner {
 					$state['last_error']    = (string) end( $result['errors'] );
 					$state['recent_errors'] = $this->append_recent_errors( $state, array_map( 'strval', $result['errors'] ) );
 				}
+
+				// Append per-item log lines to the ring buffer (keep last 200).
+				if ( ! empty( $result['log'] ) ) {
+					$log = isset( $state['log_entries'] ) ? (array) $state['log_entries'] : array();
+					$log = array_merge( $log, array_map( 'strval', $result['log'] ) );
+					if ( count( $log ) > 200 ) {
+						$log = array_slice( $log, -200 );
+					}
+					$state['log_entries'] = $log;
+				}
+				$state['last_batch_at'] = time();
 			} catch ( \Throwable $e ) {
 				// Record the failure and let the next tick retry rather than
 				// killing the run (and leaking the lock). A persistent throw is

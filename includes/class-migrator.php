@@ -271,6 +271,7 @@ class Migrator {
 			'skipped'     => 0,
 			'bytes'       => 0,
 			'errors'      => array(),
+			'log'         => array(), // Per-item log lines for the UI activity panel.
 			'next_cursor' => (string) $cursor_id,
 			'done'        => true,
 		);
@@ -305,6 +306,31 @@ class Migrator {
 			foreach ( $res['errors'] as $err ) {
 				$aggregate['errors'][] = sprintf( '[#%d] %s', $id, $err );
 			}
+
+			// Build a single-line activity log entry for the UI panel.
+			$filename = '';
+			$attached = get_attached_file( $id );
+			if ( false !== $attached && '' !== $attached ) {
+				$filename = basename( $attached );
+			}
+			if ( '' === $filename ) {
+				$filename = "#$id";
+			}
+			if ( ! empty( $res['errors'] ) ) {
+				$log_label = 'ERROR: ' . implode( '; ', $res['errors'] );
+			} elseif ( (int) $res['uploaded'] > 0 ) {
+				$bytes = (int) $res['bytes'];
+				$log_label = 'uploaded (' . ( $bytes >= 1048576
+					? round( $bytes / 1048576, 1 ) . ' MB'
+					: round( $bytes / 1024, 1 ) . ' KB' ) . ')';
+			} elseif ( (int) $res['updated'] > 0 ) {
+				$log_label = 'updated';
+			} elseif ( (int) $res['adopted'] > 0 ) {
+				$log_label = 'adopted';
+			} else {
+				$log_label = 'skipped';
+			}
+			$aggregate['log'][] = sprintf( '#%d %s → %s', $id, $filename, $log_label );
 
 			// Time-box: stop after the item that crosses the budget so the batch
 			// can't run long enough for the runner's lock to expire under it.
