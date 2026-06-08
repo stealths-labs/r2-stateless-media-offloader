@@ -169,7 +169,7 @@ jQuery(function($){
 		if ( $errs.length ) {
 			var list = (s.recent_errors && s.recent_errors.length) ? s.recent_errors : [];
 			if ( list.length ) {
-				var $h = $('<p>').css({margin:'0 0 .25em', fontWeight:'600'}).text(R2OFFLOAD_MIG.errorsLbl + ' (' + list.length + '):');
+				var $h = $('<p>').css({margin:'0 0 .25em', fontWeight:'600'}).text(R2OFFLOAD_MIG.errorsLbl + ' (' + (s.errors || 0) + '):');
 				var $ul = $('<ul>').css({margin:0, paddingLeft:'1.2em'});
 				list.forEach(function(msg){ $ul.append($('<li>').text(msg)); });
 				$errs.empty().append($h).append($ul).show();
