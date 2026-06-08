@@ -143,13 +143,14 @@ class Migrator {
 	 */
 	public function migrate_attachment( $attachment_id ) {
 		$result = array(
-			'uploaded' => 0, // New objects (were not in R2).
-			'updated'  => 0, // Existing objects replaced (size mismatch, or forced).
-			'adopted'  => 0, // Already in R2 (correct size); registered to WP for the first time.
-			'skipped'  => 0, // Already in R2 AND already registered by a prior run — no-op.
-			'missing'  => 0, // Source file 404 everywhere (local + URL); nothing to migrate.
-			'bytes'    => 0,
-			'errors'   => array(),
+			'uploaded'     => 0,        // New objects (were not in R2).
+			'updated'      => 0,        // Existing objects replaced (size mismatch, or forced).
+			'adopted'      => 0,        // Already in R2 (correct size); registered to WP for the first time.
+			'skipped'      => 0,        // Already in R2 AND already registered by a prior run — no-op.
+			'missing'      => 0,        // Source file 404 everywhere (local + URL); nothing to migrate.
+			'bytes'        => 0,
+			'errors'       => array(),
+			'written_keys' => array(),  // R2 keys confirmed present this run (for partial-ownership recording).
 		);
 
 		// Whether this attachment was already registered before this run decides
@@ -216,6 +217,24 @@ class Migrator {
 			$first_synced_at = get_post_meta( $attachment_id, self::META_SYNCED_AT, true );
 			if ( '' === (string) $first_synced_at ) {
 				update_post_meta( $attachment_id, self::META_SYNCED_AT, time() );
+			}
+		} elseif (
+			! $this->dry_run
+			&& ! $this->verify
+			&& empty( $result['errors'] )
+			&& (int) $result['missing'] > 0
+		) {
+			// Partial run: one or more source variants returned 404/410 so the
+			// attachment is incomplete. Remove any prior synced marker so the URL
+			// rewriter doesn't serve stale/missing R2 keys. Record R2 ownership
+			// for variants that ARE confirmed present this run so they can be
+			// reaped on attachment delete (SWR-333) rather than becoming orphans.
+			if ( $was_synced ) {
+				delete_post_meta( $attachment_id, self::META_SYNCED );
+				delete_post_meta( $attachment_id, self::META_KEY );
+			}
+			if ( ! empty( $result['written_keys'] ) ) {
+				Settings::record_objects( $attachment_id, $result['written_keys'] );
 			}
 		}
 
@@ -330,10 +349,13 @@ class Migrator {
 			}
 
 			// Build a single-line activity log entry for the UI panel.
-			$filename = '';
-			$attached = get_attached_file( $id );
-			if ( false !== $attached && '' !== $attached ) {
-				$filename = basename( $attached );
+			// Use the raw postmeta directly — get_attached_file() triggers a
+			// stateless restore in Local_Fallback, which downloads the file into
+			// the system temp dir just to generate a log label (SWR-332).
+			$filename      = '';
+			$relative_meta = (string) get_post_meta( $id, '_wp_attached_file', true );
+			if ( '' !== $relative_meta ) {
+				$filename = basename( $relative_meta );
 			}
 			if ( '' === $filename ) {
 				$filename = "#$id";
@@ -516,6 +538,7 @@ class Migrator {
 				// Already in R2 and correct: adopt (register for the first time) or
 				// skip (a prior run already registered this attachment).
 				$result[ $was_synced ? 'skipped' : 'adopted' ] += 1;
+				$result['written_keys'][] = $key; // Confirmed present in R2 this run.
 				return;
 			}
 			// else: size unverifiable/mismatched — fall through and re-upload (Updated).
@@ -600,6 +623,7 @@ class Migrator {
 
 		$result[ $existed ? 'updated' : 'uploaded' ] += 1;
 		$result['bytes']                             += $size_bytes;
+		$result['written_keys'][]                     = $key; // Written to R2 this run.
 	}
 
 	/**

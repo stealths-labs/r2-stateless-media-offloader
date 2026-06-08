@@ -490,6 +490,7 @@ class Migration_Runner {
 				// killing the run (and leaking the lock). A persistent throw is
 				// caught by the circuit breaker below.
 				++$state['errors'];
+				++$state['errored']; // Keep attachment-level count in sync with message count.
 				++$state['fail_streak'];
 				$state['last_error']    = $e->getMessage();
 				$state['recent_errors'] = $this->append_recent_errors( $state, array( $e->getMessage() ) );
