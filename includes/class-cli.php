@@ -333,6 +333,251 @@ class CLI {
 	}
 
 	/**
+	 * Restore all R2-offloaded attachments back to the local /uploads directory
+	 * and remove their offload registration. Run this before deactivating the
+	 * plugin in Stateless mode to avoid 404s.
+	 *
+	 * Each attachment's postmeta is only cleared after ALL its files download
+	 * successfully, so a partial failure leaves the R2 copy serving that
+	 * attachment via the rewriter (images stay live) while local restoration
+	 * continues for the rest.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--batch=<n>]
+	 * : Attachments processed per batch (default: 50).
+	 *
+	 * [--dry-run]
+	 * : Report what would be downloaded; write nothing.
+	 *
+	 * [--yes]
+	 * : Skip the confirmation prompt.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp r2offload pull --dry-run
+	 *     wp r2offload pull --yes
+	 *     wp r2offload pull --batch=25
+	 *
+	 * @when after_wp_load
+	 */
+	public function pull( $args, $assoc_args ) {
+		$settings = Plugin::instance()->settings();
+		if ( ! $settings->is_configured() ) {
+			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
+		}
+
+		$dry_run = ! empty( $assoc_args['dry-run'] );
+		$batch   = $this->positive_int_arg( $assoc_args, 'batch', 50 );
+		$client  = Plugin::instance()->client();
+
+		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
+			\WP_CLI::confirm(
+				'This will download every R2-offloaded file back to your server and remove the R2 registration. ' .
+				'Are you sure you want to continue?'
+			);
+		}
+
+		$uploads = wp_get_upload_dir();
+		if ( ! empty( $uploads['error'] ) || empty( $uploads['basedir'] ) ) {
+			\WP_CLI::error( 'Could not determine the uploads directory.' );
+		}
+		$uploads_basedir = trailingslashit( $uploads['basedir'] );
+
+		$offset    = 0;
+		$restored  = 0;
+		$skipped   = 0;
+		$errors    = 0;
+		$dry_count = 0;
+
+		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d', $dry_run ? 'dry-run' : 'pull', $batch ) );
+		\WP_CLI::log( '' );
+
+		do {
+			$ids = get_posts( array(
+				'post_type'      => 'attachment',
+				'post_status'    => 'any',
+				'posts_per_page' => $batch,
+				'offset'         => $offset,
+				'fields'         => 'ids',
+				'meta_query'     => array(
+					array(
+						'key'     => Settings::META_SYNCED,
+						'compare' => 'EXISTS',
+					),
+				),
+				'no_found_rows'  => true,
+				'orderby'        => 'ID',
+				'order'          => 'ASC',
+			) );
+
+			if ( empty( $ids ) ) {
+				break;
+			}
+
+			foreach ( $ids as $id ) {
+				$id = (int) $id;
+
+				$base_key     = (string) get_post_meta( $id, Settings::META_KEY, true );
+				$relative_raw = (string) get_post_meta( $id, '_wp_attached_file', true );
+				$objects_raw  = get_post_meta( $id, Settings::META_OBJECTS, true );
+				$objects      = Settings::normalize_object_keys( is_array( $objects_raw ) ? $objects_raw : array() );
+
+				if ( '' === $base_key || '' === $relative_raw || empty( $objects ) ) {
+					\WP_CLI::warning( sprintf( '#%d: missing R2 key or objects manifest — skipping.', $id ) );
+					++$skipped;
+					continue;
+				}
+
+				// Determine path_prefix by comparing the stored base key with the
+				// uploads-relative path. e.g. key=uploads/2024/07/img.jpg,
+				// relative=2024/07/img.jpg → prefix=uploads/
+				$relative_clean = ltrim( $relative_raw, '/' );
+				$prefix         = '';
+				if ( '' !== $relative_clean && '' !== $base_key ) {
+					$base_clean = ltrim( $base_key, '/' );
+					if ( strlen( $base_clean ) > strlen( $relative_clean ) &&
+						substr( $base_clean, -strlen( $relative_clean ) ) === $relative_clean
+					) {
+						$prefix = substr( $base_clean, 0, strlen( $base_clean ) - strlen( $relative_clean ) );
+					}
+				}
+
+				if ( $dry_run ) {
+					\WP_CLI::log( sprintf( '  #%d: would restore %d file(s)', $id, count( $objects ) ) );
+					$dry_count += count( $objects );
+					continue;
+				}
+
+				// Download every key in the ownership manifest.
+				$att_errors = array();
+				foreach ( $objects as $key ) {
+					$key_clean = ltrim( $key, '/' );
+					// Strip prefix to get the uploads-relative path.
+					$relative_key = ( '' !== $prefix && 0 === strpos( $key_clean, $prefix ) )
+						? substr( $key_clean, strlen( $prefix ) )
+						: $key_clean;
+
+					$local_path = $uploads_basedir . $relative_key;
+
+					// Skip if already restored (idempotent re-runs).
+					if ( file_exists( $local_path ) ) {
+						continue;
+					}
+
+					$result = $client->download_object( $key, $local_path );
+					if ( is_wp_error( $result ) ) {
+						$att_errors[] = sprintf( '%s: %s', $key, $result->get_error_message() );
+					}
+				}
+
+				if ( ! empty( $att_errors ) ) {
+					foreach ( $att_errors as $err ) {
+						\WP_CLI::warning( sprintf( '[#%d] %s', $id, $err ) );
+					}
+					++$errors;
+					// Leave meta intact: attachment still served from R2 via the rewriter.
+					continue;
+				}
+
+				// All files restored — clear the offload registration.
+				delete_post_meta( $id, Settings::META_SYNCED );
+				delete_post_meta( $id, Settings::META_KEY );
+				delete_post_meta( $id, Settings::META_SYNCED_AT );
+				delete_post_meta( $id, Settings::META_OBJECTS );
+				++$restored;
+
+				\WP_CLI::log( sprintf( '  #%d: restored %d file(s) — registration cleared.', $id, count( $objects ) ) );
+			}
+
+			$offset += $batch;
+			$this->flush_object_cache();
+
+		} while ( count( $ids ) === $batch );
+
+		\WP_CLI::log( '' );
+		\WP_CLI::log( '--- Summary ---' );
+		if ( $dry_run ) {
+			\WP_CLI::log( sprintf( 'Would restore: %d file(s) across attachments', $dry_count ) );
+			\WP_CLI::success( 'Dry-run complete — nothing downloaded.' );
+			return;
+		}
+		\WP_CLI::log( 'Restored: ' . $restored . ' attachment(s)' );
+		\WP_CLI::log( 'Skipped:  ' . $skipped . ' attachment(s)  (missing manifest)' );
+		\WP_CLI::log( 'Errors:   ' . $errors . ' attachment(s)  (R2 meta kept; images still served from R2)' );
+		if ( $errors > 0 ) {
+			\WP_CLI::error( sprintf( 'Pull finished with %d error(s) — see warnings above. Re-run to retry.', $errors ) );
+		}
+		\WP_CLI::success( 'Pull complete — deactivating the plugin is now safe.' );
+	}
+
+	/**
+	 * Clear all R2 offload registration from the media library WITHOUT downloading
+	 * files. Use this when switching to a different offload plugin that has already
+	 * taken ownership of the files, or to force a clean re-migration.
+	 *
+	 * WARNING: In Stateless mode (local copies deleted) this makes images 404
+	 * immediately after running. Run `pull` instead unless the new provider is
+	 * already serving the files.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--dry-run]
+	 * : Report how many attachments would be reset; change nothing.
+	 *
+	 * [--yes]
+	 * : Skip the confirmation prompt.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp r2offload reset --dry-run
+	 *     wp r2offload reset --yes
+	 *
+	 * @when after_wp_load
+	 */
+	public function reset( $args, $assoc_args ) {
+		$dry_run = ! empty( $assoc_args['dry-run'] );
+
+		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
+			\WP_CLI::confirm(
+				'This removes all R2 offload registration (postmeta) from every attachment. ' .
+				'In Stateless mode this causes immediate 404s — run `pull` first unless another plugin is already serving the files. ' .
+				'Are you sure?'
+			);
+		}
+
+		global $wpdb;
+
+		$meta_keys = array(
+			Settings::META_SYNCED,
+			Settings::META_KEY,
+			Settings::META_SYNCED_AT,
+			Settings::META_OBJECTS,
+		);
+
+		if ( $dry_run ) {
+			$count = (int) $wpdb->get_var( $wpdb->prepare(
+				"SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s",
+				Settings::META_SYNCED
+			) );
+			\WP_CLI::log( sprintf( 'Would reset: %d attachment(s)', $count ) );
+			\WP_CLI::success( 'Dry-run complete — nothing changed.' );
+			return;
+		}
+
+		$deleted = 0;
+		foreach ( $meta_keys as $key ) {
+			$rows    = (int) $wpdb->query( $wpdb->prepare(
+				"DELETE FROM {$wpdb->postmeta} WHERE meta_key = %s",
+				$key
+			) );
+			$deleted += $rows;
+		}
+
+		\WP_CLI::success( sprintf( 'Reset complete — removed %d postmeta row(s).', $deleted ) );
+	}
+
+	/**
 	 * Print the run summary.
 	 *
 	 * @param string $mode
