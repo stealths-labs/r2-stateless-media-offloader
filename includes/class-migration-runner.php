@@ -261,77 +261,120 @@ class Migration_Runner {
 
 	/**
 	 * Retry a single attachment that previously errored. Runs migrate_attachment()
-	 * directly (outside the batch loop), updates the stored state's error counters
-	 * and recent_errors ring buffer, then persists and returns the new state.
+	 * directly (outside the batch loop) in the run's stored mode, updates the
+	 * state's error counters and recent_errors ring buffer via CAS, then returns
+	 * the new state. No-op (returns current state) when the attachment is not in
+	 * the error ring buffer.
 	 *
-	 * Must only be called when the migration is not actively running — the caller
-	 * is responsible for that guard.
+	 * Must only be called when the migration is not actively running AND no batch
+	 * worker still holds the lock (has_active_worker()) — the caller is
+	 * responsible for both guards.
 	 *
 	 * @param int $attachment_id
 	 * @return array Updated state (same shape as state()).
 	 */
 	public function retry_attachment( $attachment_id ) {
 		$attachment_id = (int) $attachment_id;
+		$prefix        = '[#' . $attachment_id . '] ';
 
-		wp_cache_delete( self::STATE_OPTION, 'options' );
-		$state = get_option( self::STATE_OPTION, array() );
-		if ( ! is_array( $state ) ) {
-			$state = array();
+		// Only retry an attachment that is actually in the error ring buffer —
+		// that buffer is what the UI's Retry button was rendered from. Without
+		// this precondition a stray/replayed request for a never-errored ID
+		// would decrement `errored` and inflate an outcome counter, breaking
+		// the processed === sum(outcomes) invariant.
+		$state  = $this->fresh_state();
+		$listed = false;
+		foreach ( (array) $state['recent_errors'] as $msg ) {
+			if ( 0 === strpos( (string) $msg, $prefix ) ) {
+				$listed = true;
+				break;
+			}
+		}
+		if ( $attachment_id <= 0 || ! $listed ) {
+			return $state;
 		}
 
+		// Honour the run's mode like run_one_batch() does: a retry from a
+		// dry-run or verify run must stay read-only, and a force run must keep
+		// replacing existing objects.
+		$mode     = isset( $state['mode'] ) ? (string) $state['mode'] : 'upload';
 		$migrator = new Migrator();
-		$migrator->set_download_timeout( 300 );
+		$migrator->set_dry_run( 'dry-run' === $mode )
+			->set_verify( 'verify' === $mode )
+			->set_force( 'force' === $mode )
+			->set_download_timeout( 300 );
 		$res = $migrator->migrate_attachment( $attachment_id );
 
-		// Remove prior error messages for this attachment from the ring buffer.
-		$prefix     = '[#' . $attachment_id . '] ';
-		$old_recent = isset( $state['recent_errors'] ) && is_array( $state['recent_errors'] )
-			? $state['recent_errors'] : array();
-		$removed    = 0;
-		$kept       = array();
-		foreach ( $old_recent as $msg ) {
-			if ( 0 === strpos( (string) $msg, $prefix ) ) {
-				++$removed;
-			} else {
-				$kept[] = $msg;
-			}
-		}
-		// Mirror the per-message decrement from the original batch run.
-		$state['errors'] = max( 0, (int) ( isset( $state['errors'] ) ? $state['errors'] : 0 ) - $removed );
+		// Fold the outcome into the FRESHEST state via CAS, like the batch
+		// worker / stop() / cancel(): a worker finishing its in-flight batch
+		// (or a concurrent retry) may persist between our read and our write,
+		// and a blind update_option would clobber its cursor/counters.
+		for ( $attempt = 0; $attempt < self::PERSIST_RETRIES; $attempt++ ) {
+			wp_cache_delete( self::STATE_OPTION, 'options' );
+			$expected = get_option( self::STATE_OPTION, array() );
+			$state    = array_merge( self::default_state(), is_array( $expected ) ? $expected : array() );
 
-		if ( ! empty( $res['errors'] ) ) {
-			// Still failing — replace with the fresh error messages.
-			$new_msgs = array_map(
-				function ( $err ) use ( $prefix ) {
-					return $prefix . $err;
-				},
-				$res['errors']
-			);
-			$state['recent_errors'] = $this->append_recent_errors(
-				array( 'recent_errors' => $kept ),
-				$new_msgs
-			);
-			$state['errors'] = (int) $state['errors'] + count( $new_msgs );
-			// errored count unchanged — still one errored attachment.
-		} else {
-			// Retry succeeded — transition this attachment out of the error bucket.
-			$state['recent_errors'] = $kept;
-			$state['errored']       = max( 0, (int) ( isset( $state['errored'] ) ? $state['errored'] : 0 ) - 1 );
-			// Increment the appropriate outcome counter (preserves the
-			// processed === uploaded + updated + adopted + skipped + errored invariant).
-			if ( (int) $res['uploaded'] > 0 ) {
-				$state['uploaded'] = (int) ( isset( $state['uploaded'] ) ? $state['uploaded'] : 0 ) + 1;
-			} elseif ( (int) $res['updated'] > 0 ) {
-				$state['updated'] = (int) ( isset( $state['updated'] ) ? $state['updated'] : 0 ) + 1;
-			} elseif ( (int) $res['adopted'] > 0 ) {
-				$state['adopted'] = (int) ( isset( $state['adopted'] ) ? $state['adopted'] : 0 ) + 1;
-			} else {
-				$state['skipped'] = (int) ( isset( $state['skipped'] ) ? $state['skipped'] : 0 ) + 1;
+			// Remove prior error messages for this attachment from the ring buffer.
+			$removed = 0;
+			$kept    = array();
+			foreach ( (array) $state['recent_errors'] as $msg ) {
+				if ( 0 === strpos( (string) $msg, $prefix ) ) {
+					++$removed;
+				} else {
+					$kept[] = $msg;
+				}
 			}
-		}
+			if ( 0 === $removed ) {
+				// A concurrent writer already cleared this attachment's errors
+				// (double-click, second tab) — don't adjust the counters twice.
+				return $state;
+			}
+			// Mirror the per-message decrement from the original batch run.
+			$state['errors'] = max( 0, (int) $state['errors'] - $removed );
 
-		update_option( self::STATE_OPTION, $state, false );
-		return $state;
+			if ( ! empty( $res['errors'] ) ) {
+				// Still failing — replace with the fresh error messages.
+				$new_msgs = array_map(
+					function ( $err ) use ( $prefix ) {
+						return $prefix . $err;
+					},
+					$res['errors']
+				);
+				$state['recent_errors'] = $this->append_recent_errors(
+					array( 'recent_errors' => $kept ),
+					$new_msgs
+				);
+				$state['errors'] = (int) $state['errors'] + count( $new_msgs );
+				// errored count unchanged — still one errored attachment.
+			} else {
+				// Retry succeeded — transition this attachment out of the error
+				// bucket. Outcome priority matches migrate_batch(): missing-source
+				// before the positive outcomes, so an attachment with some
+				// variants uploaded and some missing isn't counted as "uploaded"
+				// (META_SYNCED was not written in that case).
+				$state['recent_errors'] = $kept;
+				$state['errored']       = max( 0, (int) $state['errored'] - 1 );
+				if ( isset( $res['missing'] ) && (int) $res['missing'] > 0 ) {
+					$state['skipped'] = (int) $state['skipped'] + 1;
+				} elseif ( (int) $res['uploaded'] > 0 ) {
+					$state['uploaded'] = (int) $state['uploaded'] + 1;
+				} elseif ( (int) $res['updated'] > 0 ) {
+					$state['updated'] = (int) $state['updated'] + 1;
+				} elseif ( (int) $res['adopted'] > 0 ) {
+					$state['adopted'] = (int) $state['adopted'] + 1;
+				} else {
+					$state['skipped'] = (int) $state['skipped'] + 1;
+				}
+			}
+
+			if ( $this->cas_state( $expected, $state ) ) {
+				return $state;
+			}
+			// CAS lost to a concurrent write — re-read and retry.
+		}
+		// CAS exhausted under sustained contention — return the persisted truth
+		// rather than an in-memory state that never landed.
+		return $this->fresh_state();
 	}
 
 	/**

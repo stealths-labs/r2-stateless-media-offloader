@@ -413,6 +413,15 @@ JS;
 			wp_send_json_error( array( 'message' => __( 'Cannot retry while migration is running.', 'r2-stateless-media-offload' ) ) );
 			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
+		// Just after a Pause/Stop the run is no longer "running" but a batch
+		// worker may still be finishing its in-flight batch under the lock.
+		// retry_attachment() runs a second Migrator OUTSIDE that lock, so it
+		// must not start while the worker could be processing (possibly the
+		// same attachment). Same window the WP-CLI sync guard covers.
+		if ( $this->runner->has_active_worker() ) {
+			wp_send_json_error( array( 'message' => __( 'A migration batch is still finishing — try again in a moment.', 'r2-stateless-media-offload' ) ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
+		}
 		if ( ! $this->settings->is_configured() ) {
 			wp_send_json_error( array( 'message' => __( 'Configure R2 credentials first.', 'r2-stateless-media-offload' ) ) );
 			return; // wp_send_json_error already exits; explicit for static analysis.
@@ -421,6 +430,11 @@ JS;
 		$attachment_id = (int) $raw_id;
 		if ( $attachment_id < 1 ) {
 			wp_send_json_error( array( 'message' => __( 'Invalid attachment ID.', 'r2-stateless-media-offload' ) ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
+		}
+		$post = get_post( $attachment_id );
+		if ( ! $post || 'attachment' !== $post->post_type || 'trash' === $post->post_status ) {
+			wp_send_json_error( array( 'message' => __( 'Attachment not found.', 'r2-stateless-media-offload' ) ) );
 			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
 		$this->respond( $this->runner->retry_attachment( $attachment_id ) );
