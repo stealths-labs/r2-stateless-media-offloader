@@ -366,12 +366,15 @@ class CLI {
 		$batch   = $this->positive_int_arg( $assoc_args, 'batch', 50 );
 
 		// Dry-run only reads local postmeta (reports what would be downloaded),
-		// so it doesn't need credentials — matching `sync --dry-run`.
+		// so it doesn't require credentials — matching `sync --dry-run`. When
+		// credentials ARE available, dry-run still gets a client so the legacy
+		// HEAD filter below can run and its counts match a real pull; without
+		// them, legacy counts degrade to an upper bound.
 		$settings = Plugin::instance()->settings();
 		if ( ! $dry_run && ! $settings->is_configured() ) {
 			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
 		}
-		$client = $dry_run ? null : Plugin::instance()->client();
+		$client = ( ! $dry_run || $settings->is_configured() ) ? Plugin::instance()->client() : null;
 
 		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
 			\WP_CLI::confirm(
@@ -439,10 +442,11 @@ class CLI {
 					// manifest existed) — derive the expected keys from current
 					// metadata, mirroring Offloader::r2_keys_for(). Derived keys that
 					// were never actually uploaded (e.g. backup sizes from edits made
-					// before offload) are filtered out via HEAD below so a missing
-					// one can't permanently block the restore.
+					// before offload) are filtered out via HEAD so a missing one
+					// can't permanently block the restore. The filter also runs in
+					// dry-run when credentials allow, keeping its counts honest.
 					$objects = $this->derive_legacy_object_keys( $id, $base_key, ltrim( $relative_raw, '/' ) );
-					if ( ! $dry_run && ! empty( $objects ) ) {
+					if ( null !== $client && ! empty( $objects ) ) {
 						$objects = array_values( array_filter( $objects, array( $client, 'object_exists' ) ) );
 					}
 					if ( empty( $objects ) ) {
@@ -452,19 +456,16 @@ class CLI {
 					}
 				}
 
-				// Determine path_prefix by comparing the stored base key with the
-				// uploads-relative path. e.g. key=uploads/2024/07/img.jpg,
-				// relative=2024/07/img.jpg → prefix=uploads/
+				// Every file of an attachment lives in _wp_attached_file's uploads
+				// directory. Manifest keys can carry DIFFERENT prefixes (path_prefix
+				// may have changed between offloads), so stripping one inferred
+				// prefix would write older keys to nested wrong paths under uploads
+				// and then clear the registration anyway — 404s after deactivation.
+				// Rebuild each local path from that directory + the key's basename
+				// instead of touching the key's prefix at all.
 				$relative_clean = ltrim( $relative_raw, '/' );
-				$prefix         = '';
-				if ( '' !== $relative_clean && '' !== $base_key ) {
-					$base_clean = ltrim( $base_key, '/' );
-					if ( strlen( $base_clean ) > strlen( $relative_clean ) &&
-						substr( $base_clean, -strlen( $relative_clean ) ) === $relative_clean
-					) {
-						$prefix = substr( $base_clean, 0, strlen( $base_clean ) - strlen( $relative_clean ) );
-					}
-				}
+				$relative_dir   = dirname( $relative_clean );
+				$relative_dir   = ( '.' === $relative_dir ) ? '' : trailingslashit( $relative_dir );
 
 				if ( $dry_run ) {
 					\WP_CLI::log( sprintf( '  #%d: would restore %d file(s)', $id, count( $objects ) ) );
@@ -475,13 +476,7 @@ class CLI {
 				// Download every key in the ownership manifest.
 				$att_errors = array();
 				foreach ( $objects as $key ) {
-					$key_clean = ltrim( $key, '/' );
-					// Strip prefix to get the uploads-relative path.
-					$relative_key = ( '' !== $prefix && 0 === strpos( $key_clean, $prefix ) )
-						? substr( $key_clean, strlen( $prefix ) )
-						: $key_clean;
-
-					$local_path = $uploads_basedir . $relative_key;
+					$local_path = $uploads_basedir . $relative_dir . wp_basename( $key );
 
 					// Skip if already restored (idempotent re-runs).
 					if ( file_exists( $local_path ) ) {
