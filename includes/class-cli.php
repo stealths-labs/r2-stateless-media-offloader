@@ -492,8 +492,28 @@ class CLI {
 				$relative_dir   = dirname( $relative_clean );
 				$relative_dir   = ( '.' === $relative_dir ) ? '' : trailingslashit( $relative_dir );
 				$local_map      = array();
+				$ambiguous      = array();
 				foreach ( Settings::enumerate_files( wp_get_attachment_metadata( $id ), $relative_clean ) as $file ) {
-					$local_map[ $file['filename'] ] = $file['relative'];
+					$name = (string) $file['filename'];
+					if ( isset( $local_map[ $name ] ) && $local_map[ $name ] !== $file['relative'] ) {
+						// Two different local paths share one basename — and R2 keys
+						// collapse to basenames, so only ONE object exists for both.
+						// Restoring it to either path leaves the other missing; the
+						// upload-side collision already lost one file's content.
+						// Skip rather than clear meta over an incomplete restore.
+						$ambiguous[ $name ] = true;
+						continue;
+					}
+					$local_map[ $name ] = $file['relative'];
+				}
+				if ( ! empty( $ambiguous ) ) {
+					\WP_CLI::warning( sprintf(
+						'#%d: duplicate basenames in attachment metadata (%s) — skipping to avoid an incomplete restore.',
+						$id,
+						implode( ', ', array_keys( $ambiguous ) )
+					) );
+					++$skipped;
+					continue;
 				}
 
 				if ( $dry_run ) {
