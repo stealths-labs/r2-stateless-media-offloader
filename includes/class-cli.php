@@ -453,10 +453,18 @@ class CLI {
 				$objects_raw  = get_post_meta( $id, Settings::META_OBJECTS, true );
 				$objects      = Settings::normalize_object_keys( is_array( $objects_raw ) ? $objects_raw : array() );
 
-				if ( '' === $base_key || '' === $relative_raw ) {
-					\WP_CLI::warning( sprintf( '#%d: missing R2 key or attached-file path — skipping.', $id ) );
+				if ( '' === $relative_raw ) {
+					\WP_CLI::warning( sprintf( '#%d: missing attached-file path — skipping.', $id ) );
 					++$skipped;
 					continue;
+				}
+
+				if ( '' === $base_key ) {
+					// Mirror Settings::resolve_object_key(): a synced attachment with
+					// no stored key is still served from R2 under the key derived
+					// from the current path_prefix + _wp_attached_file — restore it
+					// rather than skipping it.
+					$base_key = $settings->object_key( $relative_raw );
 				}
 
 				if ( empty( $objects ) ) {
