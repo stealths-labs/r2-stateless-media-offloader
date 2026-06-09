@@ -362,14 +362,16 @@ class CLI {
 	 * @when after_wp_load
 	 */
 	public function pull( $args, $assoc_args ) {
-		$settings = Plugin::instance()->settings();
-		if ( ! $settings->is_configured() ) {
-			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
-		}
-
 		$dry_run = ! empty( $assoc_args['dry-run'] );
 		$batch   = $this->positive_int_arg( $assoc_args, 'batch', 50 );
-		$client  = Plugin::instance()->client();
+
+		// Dry-run only reads local postmeta (reports what would be downloaded),
+		// so it doesn't need credentials — matching `sync --dry-run`.
+		$settings = Plugin::instance()->settings();
+		if ( ! $dry_run && ! $settings->is_configured() ) {
+			\WP_CLI::error( 'R2 not configured. Set R2OFFLOAD_* constants in wp-config.php or via settings.' );
+		}
+		$client = $dry_run ? null : Plugin::instance()->client();
 
 		if ( ! $dry_run && empty( $assoc_args['yes'] ) ) {
 			\WP_CLI::confirm(
@@ -384,7 +386,9 @@ class CLI {
 		}
 		$uploads_basedir = trailingslashit( $uploads['basedir'] );
 
-		$offset    = 0;
+		global $wpdb;
+
+		$last_id   = 0;
 		$restored  = 0;
 		$skipped   = 0;
 		$errors    = 0;
@@ -394,26 +398,27 @@ class CLI {
 		\WP_CLI::log( '' );
 
 		do {
-			$ids = get_posts( array(
-				'post_type'      => 'attachment',
-				'post_status'    => 'any',
-				'posts_per_page' => $batch,
-				'offset'         => $offset,
-				'fields'         => 'ids',
-				'meta_query'     => array(
-					array(
-						'key'     => Settings::META_SYNCED,
-						'compare' => 'EXISTS',
-					),
-				),
-				'no_found_rows'  => true,
-				'orderby'        => 'ID',
-				'order'          => 'ASC',
+			// Keyset pagination (ID > last seen), NOT offset: successful restores
+			// delete META_SYNCED, shrinking the result set under an offset walk —
+			// offset += batch would then skip the next batch of still-synced
+			// attachments and the command could report success with files still
+			// only on R2.
+			$ids = $wpdb->get_col( $wpdb->prepare( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- keyset pagination over postmeta; WP_Query cannot express ID > x.
+				"SELECT DISTINCT pm.post_id
+				 FROM {$wpdb->postmeta} pm
+				 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+				 WHERE pm.meta_key = %s AND p.post_type = 'attachment' AND pm.post_id > %d
+				 ORDER BY pm.post_id ASC
+				 LIMIT %d",
+				Settings::META_SYNCED,
+				$last_id,
+				$batch
 			) );
 
 			if ( empty( $ids ) ) {
 				break;
 			}
+			$last_id = (int) end( $ids );
 
 			foreach ( $ids as $id ) {
 				$id = (int) $id;
@@ -423,10 +428,28 @@ class CLI {
 				$objects_raw  = get_post_meta( $id, Settings::META_OBJECTS, true );
 				$objects      = Settings::normalize_object_keys( is_array( $objects_raw ) ? $objects_raw : array() );
 
-				if ( '' === $base_key || '' === $relative_raw || empty( $objects ) ) {
-					\WP_CLI::warning( sprintf( '#%d: missing R2 key or objects manifest — skipping.', $id ) );
+				if ( '' === $base_key || '' === $relative_raw ) {
+					\WP_CLI::warning( sprintf( '#%d: missing R2 key or attached-file path — skipping.', $id ) );
 					++$skipped;
 					continue;
+				}
+
+				if ( empty( $objects ) ) {
+					// Legacy attachment (offloaded before the META_OBJECTS ownership
+					// manifest existed) — derive the expected keys from current
+					// metadata, mirroring Offloader::r2_keys_for(). Derived keys that
+					// were never actually uploaded (e.g. backup sizes from edits made
+					// before offload) are filtered out via HEAD below so a missing
+					// one can't permanently block the restore.
+					$objects = $this->derive_legacy_object_keys( $id, $base_key, ltrim( $relative_raw, '/' ) );
+					if ( ! $dry_run && ! empty( $objects ) ) {
+						$objects = array_values( array_filter( $objects, array( $client, 'object_exists' ) ) );
+					}
+					if ( empty( $objects ) ) {
+						\WP_CLI::warning( sprintf( '#%d: no objects found in R2 for legacy registration — skipping.', $id ) );
+						++$skipped;
+						continue;
+					}
 				}
 
 				// Determine path_prefix by comparing the stored base key with the
@@ -490,7 +513,6 @@ class CLI {
 				\WP_CLI::log( sprintf( '  #%d: restored %d file(s) — registration cleared.', $id, count( $objects ) ) );
 			}
 
-			$offset += $batch;
 			$this->flush_object_cache();
 
 		} while ( count( $ids ) === $batch );
@@ -503,12 +525,51 @@ class CLI {
 			return;
 		}
 		\WP_CLI::log( 'Restored: ' . $restored . ' attachment(s)' );
-		\WP_CLI::log( 'Skipped:  ' . $skipped . ' attachment(s)  (missing manifest)' );
+		\WP_CLI::log( 'Skipped:  ' . $skipped . ' attachment(s)  (missing/invalid registration — see warnings)' );
 		\WP_CLI::log( 'Errors:   ' . $errors . ' attachment(s)  (R2 meta kept; images still served from R2)' );
 		if ( $errors > 0 ) {
 			\WP_CLI::error( sprintf( 'Pull finished with %d error(s) — see warnings above. Re-run to retry.', $errors ) );
 		}
+		if ( $skipped > 0 ) {
+			// Skipped attachments were NOT restored — don't claim deactivation is
+			// safe, and exit non-zero so automation can detect the partial result.
+			\WP_CLI::error( sprintf( 'Pull finished but %d attachment(s) were skipped — review the warnings above before deactivating.', $skipped ) );
+		}
 		\WP_CLI::success( 'Pull complete — deactivating the plugin is now safe.' );
+	}
+
+	/**
+	 * Derive the expected R2 keys for an attachment that has no META_OBJECTS
+	 * ownership manifest (offloaded before the manifest existed). Mirrors the
+	 * derivation in Offloader::r2_keys_for(): the stored original key, every
+	 * file enumerated from live attachment metadata, plus edit-history backup
+	 * sizes — all in the stored original's directory.
+	 *
+	 * @param int    $id       Attachment ID.
+	 * @param string $base_key Stored original R2 key (META_KEY).
+	 * @param string $relative Uploads-relative attached file path.
+	 * @return string[]
+	 */
+	private function derive_legacy_object_keys( $id, $base_key, $relative ) {
+		$dir = dirname( $base_key );
+		$dir = ( '.' === $dir ) ? '' : trailingslashit( $dir );
+
+		$keys     = array( $base_key );
+		$metadata = wp_get_attachment_metadata( $id );
+		foreach ( Settings::enumerate_files( $metadata, $relative ) as $file ) {
+			$keys[] = $dir . $file['filename'];
+		}
+
+		$backups = get_post_meta( $id, '_wp_attachment_backup_sizes', true );
+		if ( is_array( $backups ) ) {
+			foreach ( $backups as $backup ) {
+				if ( ! empty( $backup['file'] ) ) {
+					$keys[] = $dir . wp_basename( (string) $backup['file'] );
+				}
+			}
+		}
+
+		return array_values( array_unique( $keys ) );
 	}
 
 	/**
