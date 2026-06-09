@@ -271,7 +271,8 @@ class Migration_Runner {
 	 * responsible for both guards.
 	 *
 	 * @param int $attachment_id
-	 * @return array Updated state (same shape as state()).
+	 * @return array|\WP_Error Updated state (same shape as state()), or WP_Error
+	 *                         when the batch lock could not be acquired.
 	 */
 	public function retry_attachment( $attachment_id ) {
 		$attachment_id = (int) $attachment_id;
@@ -302,19 +303,27 @@ class Migration_Runner {
 		// acquire_lock(), reschedules its tick, and proceeds once we release.
 		if ( ! $this->acquire_lock() ) {
 			// A worker became active between the caller's guard and here —
-			// don't run a second migrator alongside it.
-			return $this->fresh_state();
+			// don't run a second migrator alongside it. WP_Error (not a state
+			// array) so the AJAX handler reports a failure instead of letting
+			// the UI render this as a completed retry.
+			return new \WP_Error(
+				'r2offload_retry_locked',
+				__( 'A migration batch is still finishing — try again in a moment.', 'r2-stateless-media-offload' )
+			);
 		}
 		try {
 			// Honour the run's mode like run_one_batch() does: a retry from a
 			// dry-run or verify run must stay read-only, and a force run must keep
-			// replacing existing objects.
+			// replacing existing objects. Heartbeat wired like the batch worker so
+			// a slow multi-size retry keeps refreshing the lock instead of letting
+			// it expire and admit a second worker mid-retry.
 			$mode     = isset( $state['mode'] ) ? (string) $state['mode'] : 'upload';
 			$migrator = new Migrator();
 			$migrator->set_dry_run( 'dry-run' === $mode )
 				->set_verify( 'verify' === $mode )
 				->set_force( 'force' === $mode )
-				->set_download_timeout( 300 );
+				->set_download_timeout( 300 )
+				->set_heartbeat( array( $this, 'refresh_lock' ) );
 			$res = $migrator->migrate_attachment( $attachment_id );
 
 			return $this->fold_retry_result( $prefix, $res );

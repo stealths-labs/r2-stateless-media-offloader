@@ -441,7 +441,14 @@ JS;
 			wp_send_json_error( array( 'message' => __( 'Attachment not found.', 'r2-stateless-media-offload' ) ) );
 			return; // wp_send_json_error already exits; explicit for static analysis.
 		}
-		$this->respond( $this->runner->retry_attachment( $attachment_id ) );
+		$result = $this->runner->retry_attachment( $attachment_id );
+		if ( is_wp_error( $result ) ) {
+			// Lock acquisition lost to a worker that became active after the
+			// guards above — a failure, not a completed retry.
+			wp_send_json_error( array( 'message' => $result->get_error_message() ) );
+			return; // wp_send_json_error already exits; explicit for static analysis.
+		}
+		$this->respond( $result );
 	}
 
 	/**
