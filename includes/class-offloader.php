@@ -92,23 +92,44 @@ class Offloader {
 		// dedupes per request, so a normal upload (where both filters fire) still
 		// uploads each variant only once.
 		add_filter( 'wp_update_attachment_metadata', array( $this, 'offload' ), 10, 2 );
-		// Fires at the START of wp_create_image_subsizes() — our signal that
-		// incremental sub-size generation is in progress for this attachment, so
-		// uploads must be DEFERRED until it finishes (see offload()). Without
-		// this, every per-size wp_update_attachment_metadata firing would PUT to
-		// R2 inline between GD resizes, stretching the upload request on slow
-		// hosts. Mirrors how wp-stateless ships everything once at the end.
+		// Defer-flag a NEW attachment the moment its post is created — BEFORE
+		// wp_create_image_subsizes()'s first metadata save (which carries an
+		// empty sizes array and fires ahead of intermediate_image_sizes_advanced).
+		// Flagging only at the intermediate filter would let that first firing
+		// upload the original and mark the attachment synced while every size
+		// save is deferred: a premature-synced window where renders emit R2
+		// size URLs that 404 (and get edge-cached). With the flag set from
+		// creation, nothing uploads until the final batched pass and the synced
+		// flag only ever appears alongside complete metadata.
+		add_action( 'add_attachment', array( $this, 'flag_new_attachment' ) );
+		// Also fires at the START of wp_create_image_subsizes() — covers the
+		// REST post-process RESUME path, where the attachment already exists
+		// (no add_attachment) but generation restarts. Uploads must be DEFERRED
+		// while generation runs: without this, every per-size
+		// wp_update_attachment_metadata firing would PUT to R2 inline between
+		// GD resizes, stretching the upload request on slow hosts. Mirrors how
+		// wp-stateless ships everything once at the end.
 		add_filter( 'intermediate_image_sizes_advanced', array( $this, 'flag_generating' ), 10, 3 );
 		// Mirror deletions to R2.
 		add_action( 'delete_attachment', array( $this, 'delete' ) );
 	}
 
 	/**
-	 * Mark an attachment as mid-generation so offload() defers its uploads, and
-	 * arm the shutdown backstop: the REST post-process resume path
-	 * (wp_update_image_subsizes → wp_create_image_subsizes) never fires the
-	 * wp_generate_attachment_metadata filter, so without the backstop a resumed
-	 * generation would end the request with nothing uploaded.
+	 * Defer-flag a newly created attachment post (add_attachment) so every
+	 * metadata firing of its creation flow — including the first, sizes-less
+	 * save inside wp_create_image_subsizes() — is deferred to the final
+	 * batched pass.
+	 *
+	 * @param int $post_id
+	 */
+	public function flag_new_attachment( $post_id ) {
+		$this->mark_generating( (int) $post_id );
+	}
+
+	/**
+	 * Mark an attachment as mid-generation so offload() defers its uploads
+	 * (intermediate_image_sizes_advanced — the REST post-process resume path,
+	 * where the attachment already exists so add_attachment never fired).
 	 *
 	 * @param array $new_sizes     Sizes to generate (passed through unchanged).
 	 * @param array $image_meta    Attachment metadata (unused).
@@ -116,15 +137,27 @@ class Offloader {
 	 * @return array
 	 */
 	public function flag_generating( $new_sizes, $image_meta, $attachment_id ) {
-		$k                      = get_current_blog_id() . ':' . (int) $attachment_id;
+		$this->mark_generating( (int) $attachment_id );
+		return $new_sizes;
+	}
+
+	/**
+	 * Record the defer flag and arm the shutdown backstop: paths that never
+	 * fire the wp_generate_attachment_metadata filter (REST post-process
+	 * resume, programmatic wp_insert_attachment flows) would otherwise end the
+	 * request with nothing uploaded.
+	 *
+	 * @param int $attachment_id
+	 */
+	private function mark_generating( $attachment_id ) {
+		$k                      = get_current_blog_id() . ':' . $attachment_id;
 		$this->generating[ $k ] = array(
 			'blog'       => get_current_blog_id(),
-			'attachment' => (int) $attachment_id,
+			'attachment' => $attachment_id,
 		);
 		// Priority 5: must run BEFORE flush_local_cleanup (default 10) so the
 		// stateless cleanup sees the synced state these uploads produce.
 		add_action( 'shutdown', array( $this, 'flush_deferred' ), 5 );
-		return $new_sizes;
 	}
 
 	/**
