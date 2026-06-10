@@ -46,6 +46,17 @@ class Offloader {
 	private $cleanup_queue = array();
 
 	/**
+	 * Attachments whose sub-size generation is in progress this request, keyed
+	 * by "{blog}:{attachment}" (see flag_generating()). While flagged, the
+	 * incremental wp_update_attachment_metadata firings are skipped; the
+	 * batched upload happens on the final wp_generate_attachment_metadata
+	 * firing, or on shutdown for resume paths that never fire it.
+	 *
+	 * @var array<string,array{blog:int,attachment:int}>
+	 */
+	private $generating = array();
+
+	/**
 	 * @param R2_Client $client
 	 * @param Settings  $settings
 	 */
@@ -55,11 +66,13 @@ class Offloader {
 	}
 
 	/**
-	 * Drop the per-request offload dedupe. Hooked on `switch_blog` (see Plugin):
-	 * the dedupe is keyed by attachment ID, which is NOT unique across a multisite
-	 * network, so a cached ID must not survive a switch to another blog and
-	 * suppress a legitimate upload there. Also bounds memory in a long-lived CLI
-	 * process that switches between many sites.
+	 * Drop the per-request offload dedupe and generation flags. Hooked on
+	 * `switch_blog` (see Plugin): both are keyed by attachment ID, which is NOT
+	 * unique across a multisite network, so a cached ID must not survive a
+	 * switch to another blog and suppress a legitimate upload there. Also
+	 * bounds memory in a long-lived CLI process that switches between many
+	 * sites. (The deferred-generation queue and cleanup queue carry their blog
+	 * id per entry, so they survive switches and flush correctly.)
 	 */
 	public function flush_request_cache() {
 		$this->offloaded = array();
@@ -79,8 +92,95 @@ class Offloader {
 		// dedupes per request, so a normal upload (where both filters fire) still
 		// uploads each variant only once.
 		add_filter( 'wp_update_attachment_metadata', array( $this, 'offload' ), 10, 2 );
+		// Fires at the START of wp_create_image_subsizes() — our signal that
+		// incremental sub-size generation is in progress for this attachment, so
+		// uploads must be DEFERRED until it finishes (see offload()). Without
+		// this, every per-size wp_update_attachment_metadata firing would PUT to
+		// R2 inline between GD resizes, stretching the upload request on slow
+		// hosts. Mirrors how wp-stateless ships everything once at the end.
+		add_filter( 'intermediate_image_sizes_advanced', array( $this, 'flag_generating' ), 10, 3 );
 		// Mirror deletions to R2.
 		add_action( 'delete_attachment', array( $this, 'delete' ) );
+	}
+
+	/**
+	 * Mark an attachment as mid-generation so offload() defers its uploads, and
+	 * arm the shutdown backstop: the REST post-process resume path
+	 * (wp_update_image_subsizes → wp_create_image_subsizes) never fires the
+	 * wp_generate_attachment_metadata filter, so without the backstop a resumed
+	 * generation would end the request with nothing uploaded.
+	 *
+	 * @param array $new_sizes     Sizes to generate (passed through unchanged).
+	 * @param array $image_meta    Attachment metadata (unused).
+	 * @param int   $attachment_id
+	 * @return array
+	 */
+	public function flag_generating( $new_sizes, $image_meta, $attachment_id ) {
+		$k                      = get_current_blog_id() . ':' . (int) $attachment_id;
+		$this->generating[ $k ] = array(
+			'blog'       => get_current_blog_id(),
+			'attachment' => (int) $attachment_id,
+		);
+		// Priority 5: must run BEFORE flush_local_cleanup (default 10) so the
+		// stateless cleanup sees the synced state these uploads produce.
+		add_action( 'shutdown', array( $this, 'flush_deferred' ), 5 );
+		return $new_sizes;
+	}
+
+	/**
+	 * Shutdown backstop: offload any attachment still flagged as generating
+	 * (its wp_generate_attachment_metadata filter never fired — the REST
+	 * post-process resume path). Reads the FINAL metadata from the DB.
+	 * Public because it's a hook callback.
+	 */
+	public function flush_deferred() {
+		$deferred         = $this->generating;
+		$this->generating = array();
+		foreach ( $deferred as $entry ) {
+			$switched = false;
+			if ( is_multisite() && get_current_blog_id() !== $entry['blog'] ) {
+				switch_to_blog( $entry['blog'] );
+				$switched = true;
+			}
+			$metadata = wp_get_attachment_metadata( $entry['attachment'] );
+			if ( is_array( $metadata ) ) {
+				$this->offload_now( $metadata, $entry['attachment'] );
+			}
+			if ( $switched ) {
+				restore_current_blog();
+			}
+		}
+	}
+
+	/**
+	 * Metadata-filter callback: route to an immediate offload or defer while
+	 * sub-size generation is in progress.
+	 *
+	 * Since WP 5.3 wp_create_image_subsizes() fires
+	 * wp_update_attachment_metadata once with NO sizes and again after EACH
+	 * generated sub-size. Uploading inline on those firings interleaves
+	 * network PUTs between GD resizes inside the upload request; instead,
+	 * firings for a flagged attachment are skipped and the single batched
+	 * upload happens on the final wp_generate_attachment_metadata firing
+	 * (complete metadata, all GD work done — the wp-stateless model), with a
+	 * shutdown backstop for resume paths that never fire it.
+	 *
+	 * @param array $metadata      Attachment metadata (passes through unchanged).
+	 * @param int   $attachment_id
+	 * @return array
+	 */
+	public function offload( $metadata, $attachment_id ) {
+		$k = get_current_blog_id() . ':' . (int) $attachment_id;
+		if ( 'wp_generate_attachment_metadata' === current_filter() ) {
+			// Generation (if any) is complete — this firing carries the full
+			// metadata. Clear the flag and upload now.
+			unset( $this->generating[ $k ] );
+		} elseif ( isset( $this->generating[ $k ] ) ) {
+			// Incremental mid-generation firing — defer (final firing or the
+			// shutdown backstop will upload everything in one pass).
+			return $metadata;
+		}
+		return $this->offload_now( $metadata, $attachment_id );
 	}
 
 	/**
@@ -90,7 +190,7 @@ class Offloader {
 	 * @param int   $attachment_id
 	 * @return array
 	 */
-	public function offload( $metadata, $attachment_id ) {
+	private function offload_now( $metadata, $attachment_id ) {
 		if ( ! $this->settings->is_configured() ) {
 			return $metadata;
 		}
@@ -114,14 +214,13 @@ class Offloader {
 		$already_synced = (bool) get_post_meta( $attachment_id, Settings::META_SYNCED, true );
 		$is_stateless   = 'stateless' === $this->settings->get( 'mode' );
 
-		// Per-KEY dedupe across this request's many metadata-filter firings.
-		// Since WP 5.3, wp_create_image_subsizes() fires
-		// wp_update_attachment_metadata once with NO sizes and again after EACH
-		// generated sub-size (plus the final wp_generate_attachment_metadata
-		// pass). Each firing uploads only the keys it hasn't sent yet, so every
-		// thumbnail goes up in the same firing that records it in metadata, and
-		// R2 always contains everything the saved metadata references. A failed
-		// key is NOT recorded, so a later firing retries it.
+		// Per-KEY dedupe across this request's metadata-filter firings: a normal
+		// upload still reaches here twice with full metadata (the final
+		// wp_generate_attachment_metadata pass, then media_handle_upload's
+		// closing wp_update_attachment_metadata), and the shutdown backstop may
+		// overlap an earlier partial pass. Each call uploads only the keys it
+		// hasn't sent yet. A failed key is NOT recorded, so a later pass
+		// retries it.
 		$done    = isset( $this->offloaded[ $attachment_id ] ) ? $this->offloaded[ $attachment_id ] : array();
 		$pending = array();
 		foreach ( $files as $local_path => $key ) {
