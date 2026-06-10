@@ -4,7 +4,7 @@ Tags: cloudflare, r2, media offload, s3, cdn
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 0.1.0
+Stable tag: 0.2.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -53,6 +53,15 @@ Yes. The migrator pulls each attachment from wherever it currently lives — loc
 No. If your media is already in R2 (for example, copied from Google Cloud Storage using Cloudflare's R2 data migration, also known as Super Slurper), just run the migration. Files already present in R2 are detected and registered without re-uploading — nothing is copied twice — and the plugin starts serving them from R2.
 
 == Changelog ==
+
+= 0.2.0 =
+* Background migration UI (Media → Migrate to R2): resumable WP-Cron-driven runs with live progress, Pause/Resume/Stop, activity log, and a "How does the background job work?" explainer.
+* Secret Access Key is now stored as plaintext in the database (industry standard; survives WordPress updates and salt rotation). A database value overrides the `R2OFFLOAD_SECRET_KEY` constant; legacy encrypted values are migrated automatically on the next settings save.
+* New WP-CLI commands for safe deactivation: `wp r2offload pull` (restore all offloaded files to local uploads, then clear registration) and `wp r2offload reset` (clear registration only).
+* Per-error Retry button, Retry All, and Clear All Errors in the migration errors panel; Start asks for confirmation when unresolved errors exist.
+* Migration runs a single pass (no automatic re-scans on large libraries); failed items are retried via the errors panel or by re-running sync.
+* Fixed: a partial migration in Stateless mode no longer un-registers an attachment whose other variants exist only in R2.
+* Fixed: missing source files (404 at origin) are counted as skipped rather than errors, and connection loss auto-pauses the run.
 
 = 0.1.0 =
 * Initial development release: SigV4 R2 client, dual-credential settings store, WP-CLI validation command.
