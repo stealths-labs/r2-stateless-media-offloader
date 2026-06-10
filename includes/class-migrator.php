@@ -225,18 +225,32 @@ class Migrator {
 			&& (int) $result['missing'] > 0
 		) {
 			// Partial run: one or more source variants returned 404/410 so the
-			// attachment is incomplete. Remove any prior synced marker so the URL
-			// rewriter doesn't serve stale/missing R2 keys. Replace (not merge)
-			// the ownership manifest with only the keys confirmed present this
-			// run — record_objects() merges by default, so stale keys from a
-			// prior full sync would survive without the explicit delete first.
-			if ( $was_synced ) {
-				delete_post_meta( $attachment_id, self::META_SYNCED );
-				delete_post_meta( $attachment_id, self::META_KEY );
-			}
-			delete_post_meta( $attachment_id, Settings::META_OBJECTS );
-			if ( ! empty( $result['written_keys'] ) ) {
-				Settings::record_objects( $attachment_id, $result['written_keys'] );
+			// attachment is incomplete.
+			if ( $was_synced && 'stateless' === $this->settings->get( 'mode' ) ) {
+				// Stateless: the local copies are gone — the other variants exist
+				// ONLY in R2, so dropping the synced marker would 404 all of them
+				// to fix one. Keep serving from R2 (mirrors the Offloader's
+				// $already_synced && ! $is_stateless gate) and keep the existing
+				// ownership manifest — its keys are still live — merging in any
+				// newly confirmed ones.
+				if ( ! empty( $result['written_keys'] ) ) {
+					Settings::record_objects( $attachment_id, $result['written_keys'] );
+				}
+			} else {
+				// CDN mode (or never synced): local copies are intact, so remove
+				// any prior synced marker and serve everything locally until a
+				// later run restores full R2 coverage. Replace (not merge) the
+				// ownership manifest with only the keys confirmed present this
+				// run — record_objects() merges by default, so stale keys from a
+				// prior full sync would survive without the explicit delete first.
+				if ( $was_synced ) {
+					delete_post_meta( $attachment_id, self::META_SYNCED );
+					delete_post_meta( $attachment_id, self::META_KEY );
+				}
+				delete_post_meta( $attachment_id, Settings::META_OBJECTS );
+				if ( ! empty( $result['written_keys'] ) ) {
+					Settings::record_objects( $attachment_id, $result['written_keys'] );
+				}
 			}
 		}
 
