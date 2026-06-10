@@ -423,6 +423,33 @@ class Migration_Runner {
 	}
 
 	/**
+	 * Dismiss the recent-errors panel: clear the ring buffer and the
+	 * message-level counters via CAS (same persist discipline as stop()/
+	 * cancel()/retry, so a finishing worker or in-flight retry can't be
+	 * clobbered by a blind write). The attachment-level `errored` count is
+	 * deliberately PRESERVED — those attachments still failed; dismissing the
+	 * message list must not break processed === uploaded + updated + adopted
+	 * + skipped + errored.
+	 *
+	 * @return array The persisted state.
+	 */
+	public function clear_errors() {
+		for ( $attempt = 0; $attempt < self::PERSIST_RETRIES; $attempt++ ) {
+			wp_cache_delete( self::STATE_OPTION, 'options' );
+			$expected = get_option( self::STATE_OPTION, array() );
+			$state    = array_merge( self::default_state(), is_array( $expected ) ? $expected : array() );
+			$state['recent_errors'] = array();
+			$state['errors']        = 0;
+			$state['last_error']    = '';
+			if ( $this->cas_state( $expected, $state ) ) {
+				return $state;
+			}
+			// CAS lost to a concurrent write — re-read and retry.
+		}
+		return $this->fresh_state();
+	}
+
+	/**
 	 * Count attachments already registered as offloaded to R2 (the "migrated"
 	 * number for the UI). A single indexed COUNT on the postmeta meta_key index —
 	 * cheap enough to call on each status poll.
