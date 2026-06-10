@@ -177,7 +177,7 @@ $r2offload_has_run = $r2offload_running || $r2offload_resumable;
 						</tr>
 						<tr>
 							<td><strong><?php esc_html_e( 'Stop', 'r2-stateless-media-offload' ); ?></strong></td>
-							<td><?php esc_html_e( 'Cancels the migration and discards all progress. The next time you click Start the job will begin again from the beginning.', 'r2-stateless-media-offload' ); ?></td>
+							<td><?php esc_html_e( 'Cancels the run and discards its position and counters — files already migrated to R2 stay in R2 and stay registered. The next Start scans the library from the beginning; already-migrated items are detected and skipped quickly.', 'r2-stateless-media-offload' ); ?></td>
 						</tr>
 					</tbody>
 				</table>
