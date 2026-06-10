@@ -167,11 +167,8 @@ class CLI {
 		\WP_CLI::log( sprintf( 'Mode: %s   Batch size: %d   Download timeout: %ds', $mode, $batch, $timeout ) );
 		\WP_CLI::log( '' );
 
-		// Upload mode retries failed items across passes (the cursor advances
-		// past errors, so a single forward walk can leave them un-migrated),
-		// matching the background runner. Verify/dry-run don't upload, so a
-		// retry pass would just re-report the same items. Force re-uploads every
-		// item, so a retry pass would re-send everything again — single pass too.
+		// Single pass only (MAX_PASSES = 1). Use the per-error Retry button in the
+		// admin UI or re-run `wp r2offload sync` to address individual failures.
 		$totals = $this->run_passes( $migrator, $batch, ( ! $verify && ! $dry_run && ! $force ) );
 
 		$this->print_summary( $mode, $verify, $totals );

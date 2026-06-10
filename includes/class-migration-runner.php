@@ -27,11 +27,10 @@ class Migration_Runner {
 	// How many times the post-batch persist re-reads and retries its CAS when a
 	// concurrent stop()/start() write keeps winning the race.
 	const PERSIST_RETRIES = 5;
-	// How many full passes a run makes. The cursor advances past attachments
-	// that errored (so a bad item can't stall forward progress), so when a pass
-	// finishes with errors we re-scan from the start to retry them — already-
-	// done items skip fast. Bounded so permanent failures can't loop forever.
-	const MAX_PASSES = 3;
+	// Single pass only — the cursor advances past errors so forward progress is
+	// never stalled, and per-error Retry buttons in the admin UI handle any
+	// stragglers after the run completes.
+	const MAX_PASSES = 1;
 	// Wall-clock budget for one batch. Kept well under LOCK_TTL so a batch can
 	// never run long enough for the lock to expire and admit a second worker on
 	// the same cursor — even after the single slow item that crosses the budget.
