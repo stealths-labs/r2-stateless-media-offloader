@@ -191,10 +191,10 @@ class Offloader {
 			// request may have died mid-generation, before the generate filter
 			// fired. Marking synced from it is safe (the rewriter only emits
 			// URLs for sizes the metadata lists, and offload_now() confirms
-			// each of those in R2 first), but deleting locals is NOT: the REST
-			// resume may still need the original on disk to generate the
-			// remaining sizes. Stateless locals are cleaned by the next
-			// complete inline pass instead.
+			// each of those in R2 first), but deleting the ORIGINAL is not:
+			// the REST resume regenerates missing sizes from it. The backstop
+			// therefore cleans confirmed-uploaded size files only and retains
+			// the original until a complete inline pass.
 			$this->offload_now( $metadata, $entry['attachment'], false );
 			if ( $switched ) {
 				restore_current_blog();
@@ -238,10 +238,11 @@ class Offloader {
 	 *
 	 * @param array $metadata      Attachment metadata (passes through unchanged).
 	 * @param int   $attachment_id
-	 * @param bool  $allow_cleanup Whether a Stateless local cleanup may be
-	 *                             queued from this pass. False for the shutdown
-	 *                             backstop, whose metadata snapshot cannot
-	 *                             prove generation finished.
+	 * @param bool  $allow_cleanup Whether this pass may queue the ORIGINAL's
+	 *                             local copy for Stateless cleanup. False for
+	 *                             the shutdown backstop, whose metadata
+	 *                             snapshot cannot prove generation finished —
+	 *                             it cleans uploaded size files only.
 	 * @return array
 	 */
 	private function offload_now( $metadata, $attachment_id, $allow_cleanup = true ) {
@@ -318,13 +319,25 @@ class Offloader {
 			// rewriter stays off and WordPress emits local /uploads URLs, so
 			// deleting the local files would 404 the media. Keep the local copies
 			// (CDN-like) until a custom domain is configured.
-			//
-			// $allow_cleanup is false for the shutdown backstop: its metadata
-			// snapshot may be partial (request died mid-generation), and the
-			// REST resume may still need these locals — including the original —
-			// to generate the remaining sizes.
-			if ( $allow_cleanup && $is_stateless && $this->settings->serves_public_url() ) {
-				$this->queue_local_cleanup( $attachment_id, $upload['uploaded_paths'] );
+			if ( $is_stateless && $this->settings->serves_public_url() ) {
+				$cleanup_paths = $upload['uploaded_paths'];
+				if ( ! $allow_cleanup ) {
+					// Shutdown-backstop pass: the metadata snapshot cannot prove
+					// generation finished, and a future REST post-process resume
+					// regenerates missing sub-sizes FROM THE ORIGINAL — so the
+					// original must stay on disk until a complete inline pass
+					// confirms generation is done. Confirmed-uploaded SIZE files
+					// are safe to clean even here: a resume never reads existing
+					// size files (sizes already in metadata are skipped, missing
+					// ones are recreated from the original).
+					$cleanup_paths = array();
+					foreach ( $upload['uploaded_paths'] as $uploaded_path ) {
+						if ( isset( $pending[ $uploaded_path ] ) && $pending[ $uploaded_path ] !== $original_key ) {
+							$cleanup_paths[] = $uploaded_path;
+						}
+					}
+				}
+				$this->queue_local_cleanup( $attachment_id, $cleanup_paths );
 			}
 
 			if ( $upload['failed'] ) {
