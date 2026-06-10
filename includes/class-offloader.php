@@ -34,12 +34,14 @@ class Offloader {
 	private $offloaded = array();
 
 	/**
-	 * Local paths queued for Stateless-mode deletion at shutdown. Deferred —
-	 * NOT deleted inline — because during incremental sub-size generation
-	 * WordPress still reads the original file to produce the remaining sizes;
-	 * deleting it mid-generation would abort the rest of the thumbnails.
+	 * Local paths queued for Stateless-mode deletion at shutdown, keyed by
+	 * "{blog}:{attachment}". Deferred — NOT deleted inline — because during
+	 * incremental sub-size generation WordPress still reads the original file
+	 * to produce the remaining sizes; deleting it mid-generation would abort
+	 * the rest of the thumbnails. The delete decision (attachment synced?) is
+	 * made at flush time against the request-final state.
 	 *
-	 * @var string[]
+	 * @var array<string,array{blog:int,attachment:int,paths:string[]}>
 	 */
 	private $cleanup_queue = array();
 
@@ -150,6 +152,23 @@ class Offloader {
 			Settings::record_objects( $attachment_id, $uploaded_keys );
 			$this->offloaded[ $attachment_id ] = $done;
 
+			// Stateless mode: collect this pass's confirmed uploads for deletion
+			// at SHUTDOWN — also BEFORE the failure bail, so locals uploaded on a
+			// pass that subsequently fails don't leak on disk (their keys are in
+			// $done, so no later firing re-queues them). Deletion is deferred and
+			// re-gated at shutdown (see flush_local_cleanup): WordPress may still
+			// need the original on disk to generate the remaining sub-sizes, and
+			// whether deleting is safe depends on the attachment's FINAL synced
+			// state for the request, not this firing's snapshot.
+			//
+			// Require a public serving URL: without a custom domain the URL
+			// rewriter stays off and WordPress emits local /uploads URLs, so
+			// deleting the local files would 404 the media. Keep the local copies
+			// (CDN-like) until a custom domain is configured.
+			if ( $is_stateless && $this->settings->serves_public_url() ) {
+				$this->queue_local_cleanup( $attachment_id, $upload['uploaded_paths'] );
+			}
+
 			if ( $upload['failed'] ) {
 				// A variant failed to reach R2 (its key stays un-recorded, so a
 				// later firing retries it). If this attachment was already synced
@@ -189,47 +208,62 @@ class Offloader {
 			$this->mark_synced( $attachment_id, $original_key );
 		}
 
-		// Stateless mode: queue the local copies we uploaded for deletion at
-		// SHUTDOWN — each is confirmed in R2, but WordPress may still need the
-		// original on disk to generate the remaining sub-sizes, so deleting
-		// inline mid-generation would abort the rest of the thumbnails. Gate on
-		// the attachment being served from R2 (synced now or already). Never
-		// strip locals for media that isn't synced — it's still served from disk.
-		//
-		// Also require a public serving URL: without a custom domain the URL
-		// rewriter stays off and WordPress emits local /uploads URLs, so
-		// deleting the local files would 404 the media. Keep the local copies
-		// (CDN-like) until a custom domain is configured.
-		if ( ! empty( $pending ) && $is_stateless && $this->settings->serves_public_url() && ( $fully_present || $already_synced ) ) {
-			$this->queue_local_cleanup( $upload['uploaded_paths'] );
-		}
-
 		return $metadata;
 	}
 
 	/**
 	 * Queue confirmed-in-R2 local copies for deletion when the request ends.
-	 * add_action() dedupes an identical callback, so repeated queuing across
-	 * firings registers the shutdown handler once.
+	 * Collection happens at upload time (every pass, even ones that later
+	 * fail); the delete decision is made at shutdown against the attachment's
+	 * FINAL synced state. Entries carry the blog id so a multisite request
+	 * that switches blogs deletes under the right site at flush time.
+	 * add_action() dedupes an identical callback, so repeated queuing
+	 * registers the shutdown handler once.
 	 *
+	 * @param int      $attachment_id
 	 * @param string[] $paths
 	 */
-	private function queue_local_cleanup( array $paths ) {
+	private function queue_local_cleanup( $attachment_id, array $paths ) {
 		if ( empty( $paths ) ) {
 			return;
 		}
-		$this->cleanup_queue = array_merge( $this->cleanup_queue, $paths );
+		$blog = get_current_blog_id();
+		$k    = $blog . ':' . (int) $attachment_id;
+		if ( ! isset( $this->cleanup_queue[ $k ] ) ) {
+			$this->cleanup_queue[ $k ] = array(
+				'blog'       => $blog,
+				'attachment' => (int) $attachment_id,
+				'paths'      => array(),
+			);
+		}
+		$this->cleanup_queue[ $k ]['paths'] = array_merge( $this->cleanup_queue[ $k ]['paths'], $paths );
 		add_action( 'shutdown', array( $this, 'flush_local_cleanup' ) );
 	}
 
 	/**
 	 * Shutdown handler: delete the queued local copies (Stateless cleanup of
-	 * confirmed uploads). Public because it's a hook callback.
+	 * confirmed uploads). Deletes ONLY when the attachment ends the request
+	 * synced — the request-final verdict, covering both "fully present now"
+	 * and "already synced before this re-offload". Media that never reached
+	 * the synced state keeps its local copies: it's still served from disk.
+	 * Public because it's a hook callback.
 	 */
 	public function flush_local_cleanup() {
-		$queue               = array_unique( $this->cleanup_queue );
+		$queue               = $this->cleanup_queue;
 		$this->cleanup_queue = array();
-		$this->cleanup_locals( $queue );
+		foreach ( $queue as $entry ) {
+			$switched = false;
+			if ( is_multisite() && get_current_blog_id() !== $entry['blog'] ) {
+				switch_to_blog( $entry['blog'] );
+				$switched = true;
+			}
+			if ( get_post_meta( $entry['attachment'], Settings::META_SYNCED, true ) ) {
+				$this->cleanup_locals( array_unique( $entry['paths'] ) );
+			}
+			if ( $switched ) {
+				restore_current_blog();
+			}
+		}
 	}
 
 	/**
