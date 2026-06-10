@@ -139,7 +139,7 @@ class Migrator {
 	 * Migrate a single attachment (original + every registered size).
 	 *
 	 * @param int $attachment_id
-	 * @return array { uploaded:int, skipped:int, bytes:int, errors:string[] }
+	 * @return array { uploaded:int, updated:int, adopted:int, skipped:int, missing:int, bytes:int, errors:string[], written_keys:string[] }
 	 */
 	public function migrate_attachment( $attachment_id ) {
 		$result = array(
