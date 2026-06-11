@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.2](https://github.com/stealths-labs/r2-stateless-media-offloader/compare/v0.3.1...v0.3.2) (2026-06-11)
+
+
+### Documentation
+
+* revise README cover poster ([5565999](https://github.com/stealths-labs/r2-stateless-media-offloader/commit/556599955f567fded3c235ca168c2df3da155151))
+* update README cover poster ([199d6d2](https://github.com/stealths-labs/r2-stateless-media-offloader/commit/199d6d2820d2be4d058cc9568bb357451128cba8))
+
 ## [0.3.1](https://github.com/stealths-labs/r2-stateless-media-offloader/compare/v0.3.0...v0.3.1) (2026-06-11)
 
 
