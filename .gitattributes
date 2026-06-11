@@ -6,3 +6,7 @@
 .env.example export-ignore
 bin export-ignore
 docker-compose.yml export-ignore
+version.txt export-ignore
+release-please-config.json export-ignore
+.release-please-manifest.json export-ignore
+CHANGELOG.md export-ignore

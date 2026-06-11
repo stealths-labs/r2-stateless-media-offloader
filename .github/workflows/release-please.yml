@@ -1,0 +1,52 @@
+# Release model: every squash-merged PR (semantic title) accumulates into a
+# rolling "release PR" maintained by release-please. A release can therefore
+# contain many PRs/features. MERGING THE RELEASE PR IS THE MANUAL RELEASE CUT:
+# it tags vX.Y.Z and publishes the GitHub Release, which triggers release.yml
+# to build + attach the installable plugin zip. (WordPress.org SVN deploy is
+# added after the plugin is approved by the Plugin Review Team.)
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # manual nudge if needed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: rp
+
+      # release-please only bumps version.txt + CHANGELOG.md. WordPress needs
+      # the version in three more places, so sync them onto the release PR
+      # branch: the plugin header "Version:", the R2OFFLOAD_VERSION constant,
+      # and readme.txt "Stable tag". release-please force-pushes the branch on
+      # every update, so this re-applies each run; the merged result always
+      # carries the synced versions.
+      - name: Checkout release PR branch
+        if: ${{ steps.rp.outputs.prs_created == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: release-please--branches--main
+
+      - name: Sync plugin version files
+        if: ${{ steps.rp.outputs.prs_created == 'true' }}
+        run: |
+          VERSION=$(cat version.txt)
+          echo "Syncing plugin files to version ${VERSION}"
+          sed -i -E "s/^( \* Version:[[:space:]]+).*/\1${VERSION}/" r2-stateless-media-offloader.php
+          sed -i -E "s/(define\( 'R2OFFLOAD_VERSION', ')[^']+(' \);)/\1${VERSION}\2/" r2-stateless-media-offloader.php
+          sed -i -E "s/^(Stable tag: ).*/\1${VERSION}/" readme.txt
+          if git diff --quiet; then
+            echo "Already in sync."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -am "chore(release): sync plugin version to ${VERSION}"
+            git push origin HEAD:release-please--branches--main
+          fi
