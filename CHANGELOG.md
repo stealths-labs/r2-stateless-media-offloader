@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/stealth-src/r2-stateless-media-offloader/compare/v0.3.2...v0.3.3) (2026-06-14)
+
+
+### Documentation
+
+* rename GitHub org stealths-labs → stealth-src ([#14](https://github.com/stealth-src/r2-stateless-media-offloader/issues/14)) ([429eaa0](https://github.com/stealth-src/r2-stateless-media-offloader/commit/429eaa062846d97b7877e5d736149ce054c9d37f))
+
 ## [0.3.2](https://github.com/stealth-src/r2-stateless-media-offloader/compare/v0.3.1...v0.3.2) (2026-06-11)
 
 
