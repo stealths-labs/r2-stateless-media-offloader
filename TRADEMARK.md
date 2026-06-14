@@ -5,8 +5,8 @@ GPL-2.0-or-later license (see [LICENSE](LICENSE)). That license governs the code
 and nothing else.
 
 The **names, brand, and logos** associated with this project — including
-"R2 Stateless Media Offloader", "stealths-labs", and any associated logos or
-wordmarks — are **trademarks of stealths-labs** and are **not** covered by the
+"R2 Stateless Media Offloader", "stealth-src", and any associated logos or
+wordmarks — are **trademarks of stealth-src** and are **not** covered by the
 GPL. The GPL grants rights to the software; it does not grant rights to
 the brand.
 
@@ -20,10 +20,10 @@ the brand.
 
 ## What you may not do, without prior written permission
 
-- Use the project name, "stealths-labs", or the logos as the name of your own
+- Use the project name, "stealth-src", or the logos as the name of your own
   distribution, fork, product, or service.
 - Use the names or logos in any way that suggests your distribution is the
-  official one, or that it is endorsed by or affiliated with stealths-labs.
+  official one, or that it is endorsed by or affiliated with stealth-src.
 - Use the names or logos in domain names, package names, app-store listings, or
   marketing in a way likely to cause confusion about the source of the software.
 
@@ -36,4 +36,4 @@ behind it*. Reserving the brand lets the code stay fully open while ensuring tha
 the version they are running is the genuine, supported one.
 
 If you would like to use the name or logos in a way not permitted above, please
-get in touch with stealths-labs to request permission.
+get in touch with stealth-src to request permission.
